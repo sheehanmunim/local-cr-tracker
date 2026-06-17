@@ -30,10 +30,21 @@ import { Input } from "./ui/input";
 
 type Cr = Doc<"crs">;
 type CrUpdate = Doc<"crUpdates">;
+type CrAction = Doc<"crActions">;
+type CrApproval = Doc<"crApprovals">;
 type CrId = Id<"crs">;
+type CrActionId = Id<"crActions">;
+type CrApprovalId = Id<"crApprovals">;
 type CrStatus = Cr["status"];
 type Priority = Cr["priority"];
 type Risk = Cr["risk"];
+type EccBoard = NonNullable<Cr["eccBoard"]>;
+type CrClassification = NonNullable<Cr["classification"]>;
+type ReviewGate = NonNullable<Cr["currentGate"]>;
+type TaskState = NonNullable<Cr["documentationNotificationStatus"]>;
+type ActionStatus = CrAction["status"];
+type ApprovalStatus = CrApproval["status"];
+type ApprovalSource = CrApproval["source"];
 type StatusFilter = CrStatus | "All";
 
 type CrFormState = {
@@ -52,6 +63,44 @@ type CrFormState = {
   businessImpact: string;
   technicalNotes: string;
   tagsInput: string;
+  eccBoard: EccBoard;
+  classification: CrClassification;
+  currentGate: ReviewGate;
+  meetingDate: string;
+  documentationDeadline: string;
+  crFolderPath: string;
+  wbsChargeNumber: string;
+  chargeNumberActive: boolean;
+  quorumInput: string;
+  documentationNotificationStatus: TaskState;
+  preMeetingReviewStatus: TaskState;
+  meetingAttendanceStatus: TaskState;
+  postMeetingPdfStatus: TaskState;
+  ncdocStatus: TaskState;
+  xclassStatus: TaskState;
+  oocApprovalStatus: TaskState;
+  chairApprovalStatus: TaskState;
+  closureNotificationStatus: TaskState;
+  cmWorkingListStatus: TaskState;
+  waiverOption: string;
+  designAuthority: string;
+  disposition: string;
+};
+
+type ActionFormState = {
+  gate: ReviewGate;
+  owner: string;
+  body: string;
+  dueDate: string;
+  evidenceLocation: string;
+};
+
+type ApprovalFormState = {
+  gate: ReviewGate;
+  approverName: string;
+  role: string;
+  source: ApprovalSource;
+  evidenceLocation: string;
 };
 
 type AssistantMessage = {
@@ -61,26 +110,95 @@ type AssistantMessage = {
 
 const statuses: CrStatus[] = [
   "Intake",
+  "Documentation Pending",
+  "Ready for Review",
+  "Meeting Scheduled",
   "Review",
   "Approved",
+  "Approved w/Actions",
   "In Progress",
   "Blocked",
+  "Held for Actions",
+  "Pending OOC Approvals",
   "Testing",
   "Implemented",
+  "Waiver Processing",
+  "NCDOC/xClass",
+  "CM Working List",
+  "Closed",
   "Rejected",
 ];
 
 const priorities: Priority[] = ["Low", "Medium", "High", "Critical"];
 const risks: Risk[] = ["Low", "Medium", "High"];
+const eccBoards: EccBoard[] = [
+  "PWES Commercial",
+  "PWES Military",
+  "EC&A",
+  "P&C",
+  "Other",
+];
+const classifications: CrClassification[] = [
+  "TBD",
+  "Class Concurrence",
+  "Class I",
+  "Class II",
+  "Waiver",
+  "Admin/NonTech",
+];
+const reviewGates: ReviewGate[] = [
+  "None",
+  "CC",
+  "CII",
+  "G1",
+  "G2",
+  "G3",
+  "G4",
+  "P&C",
+  "Waiver",
+  "Delta Review",
+];
+const taskStates: TaskState[] = [
+  "Not Started",
+  "In Progress",
+  "Complete",
+  "Blocked",
+  "Not Applicable",
+];
+const actionStatuses: ActionStatus[] = ["Open", "Closed", "Not Holding"];
+const approvalStatuses: ApprovalStatus[] = [
+  "Needed",
+  "Sent",
+  "Approved",
+  "Rejected",
+  "Not Required",
+];
+const approvalSources: ApprovalSource[] = [
+  "SharePoint",
+  "Email",
+  "Chair",
+  "Program",
+  "Other",
+];
 
 const statusTone: Record<CrStatus, string> = {
   Intake: "border-[#cbd5d1] bg-[#eef2f0] text-[#33413e]",
+  "Documentation Pending": "border-[#fed7aa] bg-[#fff7ed] text-[#c2410c]",
+  "Ready for Review": "border-[#86efac] bg-[#ecfdf3] text-[#166534]",
+  "Meeting Scheduled": "border-[#67e8f9] bg-[#ecfeff] text-[#155e75]",
   Review: "border-[#a5b4fc] bg-[#eef2ff] text-[#3730a3]",
   Approved: "border-[#86efac] bg-[#ecfdf3] text-[#166534]",
+  "Approved w/Actions": "border-[#bef264] bg-[#f7fee7] text-[#3f6212]",
   "In Progress": "border-[#67e8f9] bg-[#ecfeff] text-[#155e75]",
   Blocked: "border-[#fecaca] bg-[#fef2f2] text-[#b91c1c]",
+  "Held for Actions": "border-[#fecaca] bg-[#fff1f2] text-[#be123c]",
+  "Pending OOC Approvals": "border-[#fde68a] bg-[#fffbeb] text-[#92400e]",
   Testing: "border-[#fde68a] bg-[#fffbeb] text-[#92400e]",
   Implemented: "border-[#bbf7d0] bg-[#f0fdf4] text-[#15803d]",
+  "Waiver Processing": "border-[#ddd6fe] bg-[#f5f3ff] text-[#6d28d9]",
+  "NCDOC/xClass": "border-[#bae6fd] bg-[#f0f9ff] text-[#0369a1]",
+  "CM Working List": "border-[#c7d2fe] bg-[#eef2ff] text-[#4338ca]",
+  Closed: "border-[#bbf7d0] bg-[#f0fdf4] text-[#15803d]",
   Rejected: "border-[#d6d3d1] bg-[#f5f5f4] text-[#57534e]",
 };
 
@@ -134,6 +252,12 @@ export function CrTrackerApp() {
         cr.requester,
         cr.system,
         cr.category,
+        cr.eccBoard ?? "",
+        cr.classification ?? "",
+        cr.currentGate ?? "",
+        cr.disposition ?? "",
+        cr.wbsChargeNumber ?? "",
+        cr.designAuthority ?? "",
         cr.tags.join(" "),
       ]
         .join(" ")
@@ -501,7 +625,12 @@ function CrList({
                   {cr.title}
                 </h3>
               </div>
-              <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
+              <div className="flex flex-col items-end gap-1">
+                <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
+                <span className="text-xs text-[#596466]">
+                  {cr.currentGate ?? "No gate"}
+                </span>
+              </div>
             </div>
             <div className="mt-3 grid gap-2 text-xs text-[#596466] sm:grid-cols-2">
               <span className="flex min-w-0 items-center gap-1.5">
@@ -511,6 +640,9 @@ function CrList({
               <span className="flex min-w-0 items-center gap-1.5">
                 <CalendarClock className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{dueLabel(cr)}</span>
+              </span>
+              <span className="truncate sm:col-span-2">
+                {(cr.eccBoard ?? "Other") + " / " + (cr.classification ?? "TBD")}
               </span>
             </div>
           </button>
@@ -524,8 +656,20 @@ function CrDetails({ cr }: { cr: Cr | null }) {
   const updateCr = useMutation(api.crs.update);
   const addUpdate = useMutation(api.crs.addUpdate);
   const archiveCr = useMutation(api.crs.archive);
+  const addAction = useMutation(api.crs.addAction);
+  const updateActionStatus = useMutation(api.crs.updateActionStatus);
+  const addApproval = useMutation(api.crs.addApproval);
+  const updateApprovalStatus = useMutation(api.crs.updateApprovalStatus);
   const updates = useQuery(
     api.crs.listUpdates,
+    cr ? { crId: cr._id } : "skip",
+  );
+  const actions = useQuery(
+    api.crs.listActions,
+    cr ? { crId: cr._id } : "skip",
+  );
+  const approvals = useQuery(
+    api.crs.listApprovals,
     cr ? { crId: cr._id } : "skip",
   );
   const [isEditing, setIsEditing] = useState(false);
@@ -609,6 +753,12 @@ function CrDetails({ cr }: { cr: Cr | null }) {
               </span>
               <Badge className={statusTone[cr.status]}>{cr.status}</Badge>
               <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
+              <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                {cr.eccBoard ?? "Other"}
+              </Badge>
+              <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                {cr.classification ?? "TBD"} / {cr.currentGate ?? "None"}
+              </Badge>
             </div>
             <h2 className="text-lg font-semibold">{cr.title}</h2>
             <p className="mt-1 text-sm text-[#596466]">
@@ -651,14 +801,22 @@ function CrDetails({ cr }: { cr: Cr | null }) {
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <Info label="Owner" value={cr.owner} />
               <Info label="Requester" value={cr.requester} />
+              <Info label="Meeting" value={cr.meetingDate ?? "No date"} />
+              <Info label="Doc Deadline" value={cr.documentationDeadline ?? "No date"} />
               <Info label="Target" value={cr.targetDate ?? "No date"} />
               <Info label="Risk" value={cr.risk} valueClassName={riskTone[cr.risk]} />
-              <Info label="Submitted" value={cr.submittedDate} />
-              <Info label="Updated" value={formatTimestamp(cr.lastUpdatedAt)} />
+              <Info label="WBS Active" value={cr.chargeNumberActive ? "Yes" : "No"} />
+              <Info label="Disposition" value={cr.disposition ?? "Not set"} />
             </div>
+            <WorkflowSummary cr={cr} />
             <TextBlock label="Description" value={cr.description} />
             <TextBlock label="Business Impact" value={cr.businessImpact} />
             <TextBlock label="Technical Notes" value={cr.technicalNotes} />
+            <TextBlock label="CR Folder Path" value={cr.crFolderPath ?? "Not set"} />
+            <TextBlock
+              label="Quorum / Approvers"
+              value={(cr.quorum ?? []).join(", ") || "Not set"}
+            />
             <div>
               <p className="mb-2 text-xs font-semibold uppercase text-[#596466]">
                 Tags
@@ -680,6 +838,20 @@ function CrDetails({ cr }: { cr: Cr | null }) {
             </div>
           </div>
         )}
+
+        <div className="mt-6 border-t border-[#e5ebe8] pt-4">
+          <ActionsApprovalsPanel
+            cr={cr}
+            actions={actions ?? []}
+            approvals={approvals ?? []}
+            loading={!actions || !approvals}
+            addAction={addAction}
+            updateActionStatus={updateActionStatus}
+            addApproval={addApproval}
+            updateApprovalStatus={updateApprovalStatus}
+            onError={setError}
+          />
+        </div>
 
         <div className="mt-6 border-t border-[#e5ebe8] pt-4">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -717,6 +889,404 @@ function CrDetails({ cr }: { cr: Cr | null }) {
         </div>
       </div>
     </section>
+  );
+}
+
+function WorkflowSummary({ cr }: { cr: Cr }) {
+  const milestones: Array<[string, TaskState]> = [
+    ["Doc Notify", cr.documentationNotificationStatus ?? "Not Started"],
+    ["Pre-Meeting", cr.preMeetingReviewStatus ?? "Not Started"],
+    ["Attendance", cr.meetingAttendanceStatus ?? "Not Started"],
+    ["PDFs", cr.postMeetingPdfStatus ?? "Not Started"],
+    ["NCDOC", cr.ncdocStatus ?? "Not Started"],
+    ["xClass", cr.xclassStatus ?? "Not Started"],
+    ["OOC", cr.oocApprovalStatus ?? "Not Started"],
+    ["Chair", cr.chairApprovalStatus ?? "Not Started"],
+    ["Closure", cr.closureNotificationStatus ?? "Not Started"],
+    ["CM List", cr.cmWorkingListStatus ?? "Not Started"],
+  ];
+
+  return (
+    <div>
+      <p className="mb-2 text-xs font-semibold uppercase text-[#596466]">
+        ECC Workflow
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        {milestones.map(([label, state]) => (
+          <div
+            key={label}
+            className="rounded-md border border-[#d7dfda] bg-[#f8faf9] p-2"
+          >
+            <p className="text-[11px] font-semibold uppercase text-[#596466]">
+              {label}
+            </p>
+            <p className={cn("mt-1 text-xs font-medium", taskStateTone(state))}>
+              {state}
+            </p>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Info label="WBS" value={cr.wbsChargeNumber ?? "Not set"} />
+        <Info label="Design Authority" value={cr.designAuthority ?? "Not set"} />
+        <Info label="Waiver Option" value={cr.waiverOption ?? "Not applicable"} />
+        <Info label="Updated" value={formatTimestamp(cr.lastUpdatedAt)} />
+      </div>
+    </div>
+  );
+}
+
+function ActionsApprovalsPanel({
+  cr,
+  actions,
+  approvals,
+  loading,
+  addAction,
+  updateActionStatus,
+  addApproval,
+  updateApprovalStatus,
+  onError,
+}: {
+  cr: Cr;
+  actions: CrAction[];
+  approvals: CrApproval[];
+  loading: boolean;
+  addAction: ReturnType<typeof useMutation<typeof api.crs.addAction>>;
+  updateActionStatus: ReturnType<
+    typeof useMutation<typeof api.crs.updateActionStatus>
+  >;
+  addApproval: ReturnType<typeof useMutation<typeof api.crs.addApproval>>;
+  updateApprovalStatus: ReturnType<
+    typeof useMutation<typeof api.crs.updateApprovalStatus>
+  >;
+  onError: (message: string) => void;
+}) {
+  const [actionForm, setActionForm] = useState<ActionFormState>(() => ({
+    gate: cr.currentGate ?? "None",
+    owner: "IPT",
+    body: "",
+    dueDate: "",
+    evidenceLocation: "",
+  }));
+  const [approvalForm, setApprovalForm] = useState<ApprovalFormState>(() => ({
+    gate: cr.currentGate ?? "None",
+    approverName: "",
+    role: "Quorum",
+    source: "SharePoint",
+    evidenceLocation: "",
+  }));
+  const [saving, setSaving] = useState(false);
+
+  async function handleAddAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!actionForm.body.trim()) {
+      return;
+    }
+    setSaving(true);
+    onError("");
+    try {
+      await addAction({
+        crId: cr._id,
+        gate: actionForm.gate,
+        owner: actionForm.owner,
+        body: actionForm.body,
+        dueDate: actionForm.dueDate || null,
+        evidenceLocation: actionForm.evidenceLocation,
+        author: "Local user",
+      });
+      setActionForm({
+        gate: cr.currentGate ?? "None",
+        owner: "IPT",
+        body: "",
+        dueDate: "",
+        evidenceLocation: "",
+      });
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : "Unable to add action.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleActionStatus(id: CrActionId, status: ActionStatus) {
+    setSaving(true);
+    onError("");
+    try {
+      await updateActionStatus({ id, status, author: "Local user" });
+    } catch (caught) {
+      onError(
+        caught instanceof Error ? caught.message : "Unable to update action.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAddApproval(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!approvalForm.approverName.trim()) {
+      return;
+    }
+    setSaving(true);
+    onError("");
+    try {
+      await addApproval({
+        crId: cr._id,
+        gate: approvalForm.gate,
+        approverName: approvalForm.approverName,
+        role: approvalForm.role,
+        source: approvalForm.source,
+        evidenceLocation: approvalForm.evidenceLocation,
+        author: "Local user",
+      });
+      setApprovalForm({
+        gate: cr.currentGate ?? "None",
+        approverName: "",
+        role: "Quorum",
+        source: "SharePoint",
+        evidenceLocation: "",
+      });
+    } catch (caught) {
+      onError(
+        caught instanceof Error ? caught.message : "Unable to add approval.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleApprovalStatus(
+    id: CrApprovalId,
+    status: ApprovalStatus,
+  ) {
+    setSaving(true);
+    onError("");
+    try {
+      await updateApprovalStatus({ id, status, author: "Local user" });
+    } catch (caught) {
+      onError(
+        caught instanceof Error ? caught.message : "Unable to update approval.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Actions and OOC Approvals</h3>
+        {loading || saving ? (
+          <Loader2 className="h-4 w-4 animate-spin text-[#0f766e]" />
+        ) : null}
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="rounded-lg border border-[#d7dfda] p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold">Open Actions</p>
+            <span className="text-xs text-[#596466]">
+              {actions.filter((action) => action.status !== "Closed").length} open
+            </span>
+          </div>
+          <form onSubmit={handleAddAction} className="space-y-2">
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr]">
+              <Select
+                label="Gate"
+                value={actionForm.gate}
+                options={reviewGates}
+                onChange={(value) =>
+                  setActionForm({ ...actionForm, gate: value as ReviewGate })
+                }
+              />
+              <Field
+                label="Owner"
+                value={actionForm.owner}
+                onChange={(value) =>
+                  setActionForm({ ...actionForm, owner: value })
+                }
+              />
+            </div>
+            <Field
+              label="Action"
+              value={actionForm.body}
+              onChange={(value) => setActionForm({ ...actionForm, body: value })}
+              placeholder="Evidence needed before next gate/OOC"
+            />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Field
+                label="Due"
+                type="date"
+                value={actionForm.dueDate}
+                onChange={(value) =>
+                  setActionForm({ ...actionForm, dueDate: value })
+                }
+              />
+              <Field
+                label="Evidence"
+                value={actionForm.evidenceLocation}
+                onChange={(value) =>
+                  setActionForm({ ...actionForm, evidenceLocation: value })
+                }
+                placeholder="Folder path or note"
+              />
+            </div>
+            <Button type="submit" size="sm" disabled={saving || !actionForm.body.trim()}>
+              <Plus className="h-4 w-4" />
+              Add Action
+            </Button>
+          </form>
+          <div className="mt-3 space-y-2">
+            {actions.length === 0 ? (
+              <p className="text-sm text-[#596466]">No actions recorded.</p>
+            ) : null}
+            {actions.map((action) => (
+              <div key={action._id} className="rounded-md bg-[#f8faf9] p-3 text-sm">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                    {action.gate}
+                  </Badge>
+                  <span className={taskStateTone(action.status)}>{action.status}</span>
+                  <span className="text-xs text-[#596466]">{action.owner}</span>
+                </div>
+                <p>{action.body}</p>
+                <p className="mt-1 text-xs text-[#596466]">
+                  Due: {action.dueDate ?? "None"} / Evidence:{" "}
+                  {action.evidenceLocation || "Not set"}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {actionStatuses.map((status) => (
+                    <button
+                      key={status}
+                      onClick={() => void handleActionStatus(action._id, status)}
+                      className="rounded-md border border-[#d7dfda] bg-white px-2 py-1 text-xs hover:border-[#0f766e]"
+                      type="button"
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[#d7dfda] p-3">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-sm font-semibold">Approvals</p>
+            <span className="text-xs text-[#596466]">
+              {
+                approvals.filter(
+                  (approval) =>
+                    approval.status !== "Approved" &&
+                    approval.status !== "Not Required",
+                ).length
+              }{" "}
+              pending
+            </span>
+          </div>
+          <form onSubmit={handleAddApproval} className="space-y-2">
+            <div className="grid gap-2 sm:grid-cols-[120px_1fr]">
+              <Select
+                label="Gate"
+                value={approvalForm.gate}
+                options={reviewGates}
+                onChange={(value) =>
+                  setApprovalForm({
+                    ...approvalForm,
+                    gate: value as ReviewGate,
+                  })
+                }
+              />
+              <Field
+                label="Approver"
+                value={approvalForm.approverName}
+                onChange={(value) =>
+                  setApprovalForm({ ...approvalForm, approverName: value })
+                }
+              />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Field
+                label="Role"
+                value={approvalForm.role}
+                onChange={(value) =>
+                  setApprovalForm({ ...approvalForm, role: value })
+                }
+              />
+              <Select
+                label="Source"
+                value={approvalForm.source}
+                options={approvalSources}
+                onChange={(value) =>
+                  setApprovalForm({
+                    ...approvalForm,
+                    source: value as ApprovalSource,
+                  })
+                }
+              />
+            </div>
+            <Field
+              label="Evidence"
+              value={approvalForm.evidenceLocation}
+              onChange={(value) =>
+                setApprovalForm({ ...approvalForm, evidenceLocation: value })
+              }
+              placeholder="Workflow image, email, or folder path"
+            />
+            <Button
+              type="submit"
+              size="sm"
+              disabled={saving || !approvalForm.approverName.trim()}
+            >
+              <Plus className="h-4 w-4" />
+              Add Approval
+            </Button>
+          </form>
+          <div className="mt-3 space-y-2">
+            {approvals.length === 0 ? (
+              <p className="text-sm text-[#596466]">No approvals recorded.</p>
+            ) : null}
+            {approvals.map((approval) => (
+              <div
+                key={approval._id}
+                className="rounded-md bg-[#f8faf9] p-3 text-sm"
+              >
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                    {approval.gate}
+                  </Badge>
+                  <span className={taskStateTone(approval.status)}>
+                    {approval.status}
+                  </span>
+                  <span className="text-xs text-[#596466]">
+                    {approval.source}
+                  </span>
+                </div>
+                <p className="font-medium">{approval.approverName}</p>
+                <p className="text-xs text-[#596466]">
+                  {approval.role} / Evidence: {approval.evidenceLocation || "Not set"}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {approvalStatuses.map((status) => (
+                    <button
+                      key={status}
+                      onClick={() =>
+                        void handleApprovalStatus(approval._id, status)
+                      }
+                      className="rounded-md border border-[#d7dfda] bg-white px-2 py-1 text-xs hover:border-[#0f766e]"
+                      type="button"
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -953,6 +1523,168 @@ function CrForm({
           onChange={(value) => updateField("targetDate", value)}
         />
       </div>
+      <div className="border-t border-[#e5ebe8] pt-4">
+        <p className="mb-3 text-xs font-semibold uppercase text-[#596466]">
+          ECC Routing
+        </p>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Select
+            label="Board"
+            value={form.eccBoard}
+            onChange={(value) => updateField("eccBoard", value as EccBoard)}
+            options={eccBoards}
+          />
+          <Select
+            label="Classification"
+            value={form.classification}
+            onChange={(value) =>
+              updateField("classification", value as CrClassification)
+            }
+            options={classifications}
+          />
+          <Select
+            label="Gate"
+            value={form.currentGate}
+            onChange={(value) => updateField("currentGate", value as ReviewGate)}
+            options={reviewGates}
+          />
+          <Field
+            label="Meeting Date/Time"
+            value={form.meetingDate}
+            onChange={(value) => updateField("meetingDate", value)}
+            placeholder="YYYY-MM-DD HH:mm"
+          />
+          <Field
+            label="Doc Deadline"
+            type="date"
+            value={form.documentationDeadline}
+            onChange={(value) => updateField("documentationDeadline", value)}
+          />
+          <Field
+            label="WBS Charge"
+            value={form.wbsChargeNumber}
+            onChange={(value) => updateField("wbsChargeNumber", value)}
+          />
+          <CheckboxField
+            label="Charge Active"
+            checked={form.chargeNumberActive}
+            onChange={(value) => updateField("chargeNumberActive", value)}
+          />
+          <Field
+            label="Design Authority"
+            value={form.designAuthority}
+            onChange={(value) => updateField("designAuthority", value)}
+          />
+          <Field
+            label="CR Folder Path"
+            value={form.crFolderPath}
+            onChange={(value) => updateField("crFolderPath", value)}
+            className="xl:col-span-2"
+          />
+          <Field
+            label="Quorum / Approvers"
+            value={form.quorumInput}
+            onChange={(value) => updateField("quorumInput", value)}
+            placeholder="comma separated"
+            className="xl:col-span-2"
+          />
+          <Field
+            label="Waiver Option"
+            value={form.waiverOption}
+            onChange={(value) => updateField("waiverOption", value)}
+            className="xl:col-span-2"
+          />
+          <Field
+            label="Disposition"
+            value={form.disposition}
+            onChange={(value) => updateField("disposition", value)}
+            className="xl:col-span-2"
+          />
+        </div>
+      </div>
+      <div className="border-t border-[#e5ebe8] pt-4">
+        <p className="mb-3 text-xs font-semibold uppercase text-[#596466]">
+          ECC Milestones
+        </p>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <Select
+            label="Doc Notify"
+            value={form.documentationNotificationStatus}
+            onChange={(value) =>
+              updateField("documentationNotificationStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="Pre-Meeting"
+            value={form.preMeetingReviewStatus}
+            onChange={(value) =>
+              updateField("preMeetingReviewStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="Attendance"
+            value={form.meetingAttendanceStatus}
+            onChange={(value) =>
+              updateField("meetingAttendanceStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="PDFs"
+            value={form.postMeetingPdfStatus}
+            onChange={(value) =>
+              updateField("postMeetingPdfStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="NCDOC"
+            value={form.ncdocStatus}
+            onChange={(value) => updateField("ncdocStatus", value as TaskState)}
+            options={taskStates}
+          />
+          <Select
+            label="xClass"
+            value={form.xclassStatus}
+            onChange={(value) => updateField("xclassStatus", value as TaskState)}
+            options={taskStates}
+          />
+          <Select
+            label="OOC"
+            value={form.oocApprovalStatus}
+            onChange={(value) =>
+              updateField("oocApprovalStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="Chair"
+            value={form.chairApprovalStatus}
+            onChange={(value) =>
+              updateField("chairApprovalStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="Closure"
+            value={form.closureNotificationStatus}
+            onChange={(value) =>
+              updateField("closureNotificationStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+          <Select
+            label="CM List"
+            value={form.cmWorkingListStatus}
+            onChange={(value) =>
+              updateField("cmWorkingListStatus", value as TaskState)
+            }
+            options={taskStates}
+          />
+        </div>
+      </div>
       <div className="grid gap-3 xl:grid-cols-3">
         <Textarea
           label="Description"
@@ -1020,6 +1752,33 @@ function Field({
         required={required}
         onChange={(event) => onChange(event.target.value)}
       />
+    </label>
+  );
+}
+
+function CheckboxField({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-semibold uppercase text-[#596466]">
+        {label}
+      </span>
+      <span className="flex h-9 items-center gap-2 rounded-md border border-input bg-white px-3 text-sm shadow-sm">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          className="h-4 w-4 accent-[#0f766e]"
+        />
+        <span>{checked ? "Yes" : "No"}</span>
+      </span>
     </label>
   );
 }
@@ -1158,7 +1917,7 @@ function buildStats(crs: Cr[]) {
 }
 
 function isTerminal(status: CrStatus) {
-  return status === "Implemented" || status === "Rejected";
+  return status === "Implemented" || status === "Closed" || status === "Rejected";
 }
 
 function isDueSoon(cr: Cr) {
@@ -1212,6 +1971,28 @@ function defaultCrForm(): CrFormState {
     businessImpact: "",
     technicalNotes: "",
     tagsInput: "",
+    eccBoard: "Other",
+    classification: "TBD",
+    currentGate: "None",
+    meetingDate: "",
+    documentationDeadline: "",
+    crFolderPath: "",
+    wbsChargeNumber: "",
+    chargeNumberActive: false,
+    quorumInput: "",
+    documentationNotificationStatus: "Not Started",
+    preMeetingReviewStatus: "Not Started",
+    meetingAttendanceStatus: "Not Started",
+    postMeetingPdfStatus: "Not Started",
+    ncdocStatus: "Not Started",
+    xclassStatus: "Not Started",
+    oocApprovalStatus: "Not Started",
+    chairApprovalStatus: "Not Started",
+    closureNotificationStatus: "Not Started",
+    cmWorkingListStatus: "Not Started",
+    waiverOption: "",
+    designAuthority: "",
+    disposition: "Documentation pending",
   };
 }
 
@@ -1232,6 +2013,29 @@ function formFromCr(cr: Cr): CrFormState {
     businessImpact: cr.businessImpact,
     technicalNotes: cr.technicalNotes,
     tagsInput: cr.tags.join(", "),
+    eccBoard: cr.eccBoard ?? "Other",
+    classification: cr.classification ?? "TBD",
+    currentGate: cr.currentGate ?? "None",
+    meetingDate: cr.meetingDate ?? "",
+    documentationDeadline: cr.documentationDeadline ?? "",
+    crFolderPath: cr.crFolderPath ?? "",
+    wbsChargeNumber: cr.wbsChargeNumber ?? "",
+    chargeNumberActive: cr.chargeNumberActive ?? false,
+    quorumInput: (cr.quorum ?? []).join(", "),
+    documentationNotificationStatus:
+      cr.documentationNotificationStatus ?? "Not Started",
+    preMeetingReviewStatus: cr.preMeetingReviewStatus ?? "Not Started",
+    meetingAttendanceStatus: cr.meetingAttendanceStatus ?? "Not Started",
+    postMeetingPdfStatus: cr.postMeetingPdfStatus ?? "Not Started",
+    ncdocStatus: cr.ncdocStatus ?? "Not Started",
+    xclassStatus: cr.xclassStatus ?? "Not Started",
+    oocApprovalStatus: cr.oocApprovalStatus ?? "Not Started",
+    chairApprovalStatus: cr.chairApprovalStatus ?? "Not Started",
+    closureNotificationStatus: cr.closureNotificationStatus ?? "Not Started",
+    cmWorkingListStatus: cr.cmWorkingListStatus ?? "Not Started",
+    waiverOption: cr.waiverOption ?? "",
+    designAuthority: cr.designAuthority ?? "",
+    disposition: cr.disposition ?? "",
   };
 }
 
@@ -1252,6 +2056,7 @@ function formToCreateArgs(form: CrFormState) {
     businessImpact: form.businessImpact,
     technicalNotes: form.technicalNotes,
     tags: parseTags(form.tagsInput),
+    ...formToWorkflowArgs(form),
     author: "Local user",
   };
 }
@@ -1273,7 +2078,35 @@ function formToUpdateArgs(form: CrFormState) {
     businessImpact: form.businessImpact,
     technicalNotes: form.technicalNotes,
     tags: parseTags(form.tagsInput),
+    ...formToWorkflowArgs(form),
     author: "Local user",
+  };
+}
+
+function formToWorkflowArgs(form: CrFormState) {
+  return {
+    eccBoard: form.eccBoard,
+    classification: form.classification,
+    currentGate: form.currentGate,
+    meetingDate: form.meetingDate || null,
+    documentationDeadline: form.documentationDeadline || null,
+    crFolderPath: form.crFolderPath,
+    wbsChargeNumber: form.wbsChargeNumber,
+    chargeNumberActive: form.chargeNumberActive,
+    quorum: parseList(form.quorumInput),
+    documentationNotificationStatus: form.documentationNotificationStatus,
+    preMeetingReviewStatus: form.preMeetingReviewStatus,
+    meetingAttendanceStatus: form.meetingAttendanceStatus,
+    postMeetingPdfStatus: form.postMeetingPdfStatus,
+    ncdocStatus: form.ncdocStatus,
+    xclassStatus: form.xclassStatus,
+    oocApprovalStatus: form.oocApprovalStatus,
+    chairApprovalStatus: form.chairApprovalStatus,
+    closureNotificationStatus: form.closureNotificationStatus,
+    cmWorkingListStatus: form.cmWorkingListStatus,
+    waiverOption: form.waiverOption || null,
+    designAuthority: form.designAuthority,
+    disposition: form.disposition,
   };
 }
 
@@ -1282,6 +2115,34 @@ function parseTags(value: string) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function parseList(value: string) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function taskStateTone(state: string) {
+  if (
+    state === "Complete" ||
+    state === "Closed" ||
+    state === "Approved" ||
+    state === "Not Holding"
+  ) {
+    return "text-[#15803d]";
+  }
+  if (state === "Blocked" || state === "Rejected") {
+    return "text-[#b91c1c]";
+  }
+  if (state === "In Progress" || state === "Sent" || state === "Open") {
+    return "text-[#0369a1]";
+  }
+  if (state === "Needed") {
+    return "text-[#b45309]";
+  }
+  return "text-[#596466]";
 }
 
 function todayInput() {

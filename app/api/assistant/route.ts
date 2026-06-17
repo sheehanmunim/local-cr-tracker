@@ -1,5 +1,7 @@
 import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 
 type IncomingMessage = {
@@ -44,6 +46,7 @@ export async function POST(request: Request) {
   const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_URL;
   const convex = new ConvexHttpClient(convexUrl);
   const context = await convex.query(api.crs.assistantContext, { limit: 100 });
+  const processKnowledge = await readProcessKnowledge();
   const selectedCrNumber = body?.selectedCrNumber ?? null;
 
   const systemPrompt = [
@@ -55,6 +58,7 @@ export async function POST(request: Request) {
       ? `The user currently has ${selectedCrNumber} selected in the UI.`
       : "No CR is currently selected in the UI.",
     `Current timestamp: ${new Date().toISOString()}.`,
+    `ECC process knowledge:\n${processKnowledge}`,
     `CR JSON context:\n${JSON.stringify(context, null, 2).slice(0, 30000)}`,
   ].join("\n\n");
 
@@ -108,6 +112,17 @@ export async function POST(request: Request) {
       },
       { status: 502 },
     );
+  }
+}
+
+async function readProcessKnowledge() {
+  try {
+    return await readFile(
+      path.join(process.cwd(), "docs", "ecc-process-knowledge.md"),
+      "utf8",
+    );
+  } catch {
+    return "No ECC process knowledge file was available.";
   }
 }
 
