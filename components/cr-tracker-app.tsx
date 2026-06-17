@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   CircleDot,
   Download,
+  Kanban,
+  List,
   Loader2,
   MessageSquarePlus,
   Plus,
@@ -45,6 +47,17 @@ type ActionStatus = CrAction["status"];
 type ApprovalStatus = CrApproval["status"];
 type ApprovalSource = CrApproval["source"];
 type StatusFilter = CrStatus | "All";
+type BoardFilter = EccBoard | "All";
+type ClassificationFilter = CrClassification | "All";
+type CrScope =
+  | "mine"
+  | "all"
+  | "attention"
+  | "dueSoon"
+  | "actions"
+  | "approvals"
+  | "complete";
+type ViewMode = "list" | "kanban";
 
 type CrFormState = {
   crNumber: string;
@@ -215,15 +228,62 @@ const riskTone: Record<Risk, string> = {
   High: "text-[#111111]",
 };
 
+const kanbanColumns: Array<{
+  id: string;
+  title: string;
+  statuses: CrStatus[];
+}> = [
+  {
+    id: "intake",
+    title: "Intake",
+    statuses: ["Intake", "Documentation Pending"],
+  },
+  {
+    id: "review",
+    title: "Review",
+    statuses: ["Ready for Review", "Meeting Scheduled", "Review"],
+  },
+  {
+    id: "hold",
+    title: "Actions / OOC",
+    statuses: [
+      "Approved w/Actions",
+      "Held for Actions",
+      "Pending OOC Approvals",
+      "Waiver Processing",
+      "NCDOC/xClass",
+      "CM Working List",
+    ],
+  },
+  {
+    id: "delivery",
+    title: "Delivery",
+    statuses: ["Approved", "In Progress", "Implemented"],
+  },
+  {
+    id: "closed",
+    title: "Closed",
+    statuses: ["Closed", "Rejected"],
+  },
+];
+
 export function CrTrackerApp() {
   const crs = useQuery(api.crs.list, { status: "All" });
   const createCr = useMutation(api.crs.create);
+  const updateCr = useMutation(api.crs.update);
   const [selectedId, setSelectedId] = useState<CrId | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [scope, setScope] = useState<CrScope>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [localOwner, setLocalOwner] = useState("Local user");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "All">("All");
   const [riskFilter, setRiskFilter] = useState<Risk | "All">("All");
+  const [boardFilter, setBoardFilter] = useState<BoardFilter>("All");
+  const [classificationFilter, setClassificationFilter] =
+    useState<ClassificationFilter>("All");
   const [ownerFilter, setOwnerFilter] = useState("All");
+  const [movingId, setMovingId] = useState<CrId | null>(null);
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -232,15 +292,28 @@ export function CrTrackerApp() {
     return Array.from(new Set(source.map((cr) => cr.owner))).sort();
   }, [crs]);
 
+  const scopeCounts = useMemo(
+    () => buildScopeCounts(crs ?? [], localOwner),
+    [crs, localOwner],
+  );
+
+  const boardCounts = useMemo(() => buildBoardCounts(crs ?? []), [crs]);
+
   const filteredCrs = useMemo(() => {
     const source = crs ?? [];
     const term = search.trim().toLowerCase();
     return source.filter((cr) => {
+      const matchesScope = crMatchesScope(cr, scope, localOwner);
       const matchesStatus = statusFilter === "All" || cr.status === statusFilter;
       const matchesPriority =
         priorityFilter === "All" || cr.priority === priorityFilter;
       const matchesRisk = riskFilter === "All" || cr.risk === riskFilter;
       const matchesOwner = ownerFilter === "All" || cr.owner === ownerFilter;
+      const matchesBoard =
+        boardFilter === "All" || (cr.eccBoard ?? "Other") === boardFilter;
+      const matchesClassification =
+        classificationFilter === "All" ||
+        (cr.classification ?? "TBD") === classificationFilter;
       const haystack = [
         cr.crNumber,
         cr.title,
@@ -263,14 +336,28 @@ export function CrTrackerApp() {
         .toLowerCase();
 
       return (
+        matchesScope &&
         matchesStatus &&
         matchesPriority &&
         matchesRisk &&
         matchesOwner &&
+        matchesBoard &&
+        matchesClassification &&
         (!term || haystack.includes(term))
       );
     });
-  }, [crs, ownerFilter, priorityFilter, riskFilter, search, statusFilter]);
+  }, [
+    boardFilter,
+    classificationFilter,
+    crs,
+    localOwner,
+    ownerFilter,
+    priorityFilter,
+    riskFilter,
+    scope,
+    search,
+    statusFilter,
+  ]);
 
   const selectedCr =
     (selectedId && filteredCrs.find((cr) => cr._id === selectedId)) ??
@@ -288,6 +375,24 @@ export function CrTrackerApp() {
     anchor.download = "cr-tracker-export.json";
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function handleKanbanStatusChange(cr: Cr, status: CrStatus) {
+    if (cr.status === status) {
+      return;
+    }
+    setMovingId(cr._id);
+    setNotice("");
+    try {
+      await updateCr({ id: cr._id, status, author: "Local user" });
+      setNotice(`${cr.crNumber} moved to ${status}.`);
+    } catch (caught) {
+      setNotice(
+        caught instanceof Error ? caught.message : "Unable to update status.",
+      );
+    } finally {
+      setMovingId(null);
+    }
   }
 
   return (
@@ -325,7 +430,24 @@ export function CrTrackerApp() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-[1680px] gap-4 px-4 py-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+      <main className="mx-auto grid max-w-[1800px] gap-4 px-4 py-4 lg:grid-cols-[260px_minmax(0,1fr)] lg:px-6 xl:grid-cols-[260px_minmax(0,1fr)_420px]">
+        <TrackerSidebar
+          scope={scope}
+          localOwner={localOwner}
+          counts={scopeCounts}
+          boardCounts={boardCounts}
+          boardFilter={boardFilter}
+          onScopeChange={(nextScope) => {
+            setScope(nextScope);
+            setStatusFilter("All");
+          }}
+          onLocalOwnerChange={setLocalOwner}
+          onBoardFilterChange={(nextBoard) => {
+            setBoardFilter(nextBoard);
+            setScope("all");
+          }}
+        />
+
         <div className="space-y-4">
           <MetricStrip stats={stats} />
           <FilterBar
@@ -333,13 +455,23 @@ export function CrTrackerApp() {
             statusFilter={statusFilter}
             priorityFilter={priorityFilter}
             riskFilter={riskFilter}
+            boardFilter={boardFilter}
+            classificationFilter={classificationFilter}
             ownerFilter={ownerFilter}
             search={search}
             onStatusFilterChange={setStatusFilter}
             onPriorityFilterChange={setPriorityFilter}
             onRiskFilterChange={setRiskFilter}
+            onBoardFilterChange={setBoardFilter}
+            onClassificationFilterChange={setClassificationFilter}
             onOwnerFilterChange={setOwnerFilter}
             onSearchChange={setSearch}
+          />
+          <ViewControls
+            scope={scope}
+            viewMode={viewMode}
+            count={filteredCrs.length}
+            onViewModeChange={setViewMode}
           />
 
           {isCreating ? (
@@ -354,15 +486,32 @@ export function CrTrackerApp() {
             />
           ) : null}
 
-          <section className="grid gap-4 min-[1180px]:grid-cols-[420px_minmax(0,1fr)]">
-            <CrList
-              crs={filteredCrs}
-              loading={!crs}
-              selectedId={selectedCr?._id ?? null}
-              onSelect={setSelectedId}
-            />
-            <CrDetails key={selectedCr?._id ?? "empty"} cr={selectedCr} />
-          </section>
+          {viewMode === "list" ? (
+            <section className="grid gap-4 min-[1180px]:grid-cols-[420px_minmax(0,1fr)]">
+              <CrList
+                crs={filteredCrs}
+                loading={!crs}
+                selectedId={selectedCr?._id ?? null}
+                title={scopeTitle(scope)}
+                onSelect={setSelectedId}
+              />
+              <CrDetails key={selectedCr?._id ?? "empty"} cr={selectedCr} />
+            </section>
+          ) : (
+            <section className="grid gap-4 min-[1180px]:grid-cols-[minmax(0,1fr)_420px]">
+              <KanbanBoard
+                crs={filteredCrs}
+                loading={!crs}
+                selectedId={selectedCr?._id ?? null}
+                movingId={movingId}
+                onSelect={setSelectedId}
+                onStatusChange={(cr, status) =>
+                  void handleKanbanStatusChange(cr, status)
+                }
+              />
+              <CrDetails key={selectedCr?._id ?? "empty"} cr={selectedCr} />
+            </section>
+          )}
         </div>
 
         <AssistantPanel selectedCr={selectedCr} />
@@ -436,16 +585,217 @@ function MetricStrip({ stats }: { stats: ReturnType<typeof buildStats> }) {
   );
 }
 
+function TrackerSidebar({
+  scope,
+  localOwner,
+  counts,
+  boardCounts,
+  boardFilter,
+  onScopeChange,
+  onLocalOwnerChange,
+  onBoardFilterChange,
+}: {
+  scope: CrScope;
+  localOwner: string;
+  counts: ReturnType<typeof buildScopeCounts>;
+  boardCounts: ReturnType<typeof buildBoardCounts>;
+  boardFilter: BoardFilter;
+  onScopeChange: (scope: CrScope) => void;
+  onLocalOwnerChange: (owner: string) => void;
+  onBoardFilterChange: (board: BoardFilter) => void;
+}) {
+  const scopeItems = [
+    { id: "mine" as const, label: "My CRs", count: counts.mine, icon: UserRound },
+    { id: "all" as const, label: "All CRs", count: counts.all, icon: CircleDot },
+    {
+      id: "attention" as const,
+      label: "Needs Attention",
+      count: counts.attention,
+      icon: AlertTriangle,
+    },
+    {
+      id: "dueSoon" as const,
+      label: "Due Soon",
+      count: counts.dueSoon,
+      icon: CalendarClock,
+    },
+    {
+      id: "actions" as const,
+      label: "Actions",
+      count: counts.actions,
+      icon: SlidersHorizontal,
+    },
+    {
+      id: "approvals" as const,
+      label: "Approvals",
+      count: counts.approvals,
+      icon: CheckCircle2,
+    },
+    {
+      id: "complete" as const,
+      label: "Complete",
+      count: counts.complete,
+      icon: Archive,
+    },
+  ];
+
+  return (
+    <aside className="space-y-4 rounded-lg border border-[#d4d4d4] bg-white p-3 shadow-sm lg:sticky lg:top-4 lg:max-h-[calc(100vh-32px)] lg:overflow-y-auto">
+      <div className="border-b border-[#e5e5e5] pb-3">
+        <p className="text-xs font-semibold uppercase text-[#525252]">
+          Workspace
+        </p>
+        <h2 className="mt-1 text-base font-semibold">CR Tracker</h2>
+      </div>
+
+      <label className="block">
+        <span className="mb-1 block text-xs font-semibold uppercase text-[#525252]">
+          My Owner Name
+        </span>
+        <Input
+          value={localOwner}
+          onChange={(event) => onLocalOwnerChange(event.target.value)}
+          placeholder="Owner name"
+        />
+      </label>
+
+      <nav className="space-y-1">
+        {scopeItems.map((item) => {
+          const Icon = item.icon;
+          const active = scope === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onScopeChange(item.id)}
+              className={cn(
+                "flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition",
+                active
+                  ? "border-[#171717] bg-[#171717] text-white"
+                  : "border-transparent bg-white text-[#262626] hover:border-[#d4d4d4] hover:bg-[#f5f5f5]",
+              )}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </span>
+              <span
+                className={cn(
+                  "rounded-md px-1.5 py-0.5 text-xs",
+                  active ? "bg-white text-[#171717]" : "bg-[#f5f5f5] text-[#525252]",
+                )}
+              >
+                {item.count}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+
+      <div className="border-t border-[#e5e5e5] pt-3">
+        <p className="mb-2 text-xs font-semibold uppercase text-[#525252]">
+          Boards
+        </p>
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={() => onBoardFilterChange("All")}
+            className={cn(
+              "flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm transition",
+              boardFilter === "All"
+                ? "border-[#171717] bg-[#171717] text-white"
+                : "border-transparent hover:border-[#d4d4d4] hover:bg-[#f5f5f5]",
+            )}
+          >
+            <span>All Boards</span>
+            <span>{boardCounts.All}</span>
+          </button>
+          {eccBoards.map((board) => (
+            <button
+              key={board}
+              type="button"
+              onClick={() => onBoardFilterChange(board)}
+              className={cn(
+                "flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm transition",
+                boardFilter === board
+                  ? "border-[#171717] bg-[#171717] text-white"
+                  : "border-transparent hover:border-[#d4d4d4] hover:bg-[#f5f5f5]",
+              )}
+            >
+              <span className="truncate">{board}</span>
+              <span>{boardCounts[board] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function ViewControls({
+  scope,
+  viewMode,
+  count,
+  onViewModeChange,
+}: {
+  scope: CrScope;
+  viewMode: ViewMode;
+  count: number;
+  onViewModeChange: (mode: ViewMode) => void;
+}) {
+  const viewItems = [
+    { id: "list" as const, label: "List", icon: List },
+    { id: "kanban" as const, label: "Kanban", icon: Kanban },
+  ];
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-[#d4d4d4] bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-xs font-semibold uppercase text-[#525252]">
+          {scopeTitle(scope)}
+        </p>
+        <p className="text-sm text-[#262626]">{count} shown</p>
+      </div>
+      <div className="inline-flex rounded-md border border-[#d4d4d4] bg-[#f5f5f5] p-1">
+        {viewItems.map((item) => {
+          const Icon = item.icon;
+          const active = viewMode === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onViewModeChange(item.id)}
+              className={cn(
+                "inline-flex items-center gap-2 rounded px-3 py-1.5 text-sm transition",
+                active
+                  ? "bg-white text-[#111111] shadow-sm"
+                  : "text-[#525252] hover:text-[#111111]",
+              )}
+            >
+              <Icon className="h-4 w-4" />
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function FilterBar({
   owners,
   statusFilter,
   priorityFilter,
   riskFilter,
+  boardFilter,
+  classificationFilter,
   ownerFilter,
   search,
   onStatusFilterChange,
   onPriorityFilterChange,
   onRiskFilterChange,
+  onBoardFilterChange,
+  onClassificationFilterChange,
   onOwnerFilterChange,
   onSearchChange,
 }: {
@@ -453,17 +803,21 @@ function FilterBar({
   statusFilter: StatusFilter;
   priorityFilter: Priority | "All";
   riskFilter: Risk | "All";
+  boardFilter: BoardFilter;
+  classificationFilter: ClassificationFilter;
   ownerFilter: string;
   search: string;
   onStatusFilterChange: (value: StatusFilter) => void;
   onPriorityFilterChange: (value: Priority | "All") => void;
   onRiskFilterChange: (value: Risk | "All") => void;
+  onBoardFilterChange: (value: BoardFilter) => void;
+  onClassificationFilterChange: (value: ClassificationFilter) => void;
   onOwnerFilterChange: (value: string) => void;
   onSearchChange: (value: string) => void;
 }) {
   return (
     <section className="rounded-lg border border-[#d4d4d4] bg-white p-3 shadow-sm">
-      <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_repeat(4,minmax(120px,170px))]">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(6,minmax(120px,170px))]">
         <label className="relative">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#737373]" />
           <Input
@@ -490,6 +844,20 @@ function FilterBar({
           value={riskFilter}
           onChange={(value) => onRiskFilterChange(value as Risk | "All")}
           options={["All", ...risks]}
+        />
+        <Select
+          label="Board"
+          value={boardFilter}
+          onChange={(value) => onBoardFilterChange(value as BoardFilter)}
+          options={["All", ...eccBoards]}
+        />
+        <Select
+          label="Class"
+          value={classificationFilter}
+          onChange={(value) =>
+            onClassificationFilterChange(value as ClassificationFilter)
+          }
+          options={["All", ...classifications]}
         />
         <Select
           label="Owner"
@@ -559,18 +927,20 @@ function CrList({
   crs,
   loading,
   selectedId,
+  title,
   onSelect,
 }: {
   crs: Cr[];
   loading: boolean;
   selectedId: CrId | null;
+  title: string;
   onSelect: (id: CrId) => void;
 }) {
   return (
     <section className="min-h-[520px] rounded-lg border border-[#d4d4d4] bg-white shadow-sm">
       <div className="flex items-center justify-between border-b border-[#d4d4d4] px-4 py-3">
         <div>
-          <h2 className="text-base font-semibold">Change Requests</h2>
+          <h2 className="text-base font-semibold">{title}</h2>
           <p className="text-xs text-[#525252]">{crs.length} shown</p>
         </div>
         <RefreshCw
@@ -633,6 +1003,134 @@ function CrList({
           </button>
         ))}
       </div>
+    </section>
+  );
+}
+
+function KanbanBoard({
+  crs,
+  loading,
+  selectedId,
+  movingId,
+  onSelect,
+  onStatusChange,
+}: {
+  crs: Cr[];
+  loading: boolean;
+  selectedId: CrId | null;
+  movingId: CrId | null;
+  onSelect: (id: CrId) => void;
+  onStatusChange: (cr: Cr, status: CrStatus) => void;
+}) {
+  return (
+    <section className="min-h-[620px] rounded-lg border border-[#d4d4d4] bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-[#d4d4d4] px-4 py-3">
+        <div>
+          <h2 className="text-base font-semibold">Kanban</h2>
+          <p className="text-xs text-[#525252]">{crs.length} shown</p>
+        </div>
+        <RefreshCw
+          className={cn("h-4 w-4 text-[#737373]", loading && "animate-spin")}
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex h-40 items-center justify-center text-sm text-[#525252]">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading CRs
+        </div>
+      ) : null}
+
+      {!loading && crs.length === 0 ? (
+        <div className="p-6 text-sm text-[#525252]">
+          No CRs match the current filters.
+        </div>
+      ) : null}
+
+      {!loading && crs.length > 0 ? (
+        <div className="grid gap-3 overflow-x-auto p-3 min-[1180px]:grid-cols-5">
+          {kanbanColumns.map((column) => {
+            const columnCrs = crs.filter((cr) =>
+              column.statuses.includes(cr.status),
+            );
+            return (
+              <div
+                key={column.id}
+                className="min-w-[240px] rounded-md border border-[#d4d4d4] bg-[#f5f5f5]"
+              >
+                <div className="flex items-center justify-between border-b border-[#d4d4d4] px-3 py-2">
+                  <h3 className="text-sm font-semibold">{column.title}</h3>
+                  <span className="rounded-md bg-white px-2 py-0.5 text-xs text-[#525252]">
+                    {columnCrs.length}
+                  </span>
+                </div>
+                <div className="space-y-2 p-2">
+                  {columnCrs.length === 0 ? (
+                    <p className="rounded-md border border-dashed border-[#d4d4d4] bg-white p-3 text-xs text-[#525252]">
+                      Empty
+                    </p>
+                  ) : null}
+                  {columnCrs.map((cr) => (
+                    <div
+                      key={cr._id}
+                      className={cn(
+                        "rounded-md border bg-white p-3 shadow-sm",
+                        selectedId === cr._id
+                          ? "border-[#171717]"
+                          : "border-[#d4d4d4]",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelect(cr._id)}
+                        className="block w-full text-left"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-semibold">
+                            {cr.crNumber}
+                          </span>
+                          <Badge className={priorityTone[cr.priority]}>
+                            {cr.priority}
+                          </Badge>
+                        </div>
+                        <h4 className="mt-2 line-clamp-2 text-sm font-semibold">
+                          {cr.title}
+                        </h4>
+                        <div className="mt-2 space-y-1 text-xs text-[#525252]">
+                          <p>{cr.owner}</p>
+                          <p>{dueLabel(cr)}</p>
+                          <p>
+                            {(cr.eccBoard ?? "Other") +
+                              " / " +
+                              (cr.currentGate ?? "None")}
+                          </p>
+                        </div>
+                      </button>
+                      <label className="mt-3 block">
+                        <span className="sr-only">Move status</span>
+                        <select
+                          value={cr.status}
+                          disabled={movingId === cr._id}
+                          onChange={(event) =>
+                            onStatusChange(cr, event.target.value as CrStatus)
+                          }
+                          className="h-8 w-full rounded-md border border-[#d4d4d4] bg-white px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#171717]"
+                        >
+                          {statuses.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1888,6 +2386,112 @@ function UpdateItem({ update }: { update: CrUpdate }) {
       </div>
       <p>{update.body}</p>
     </div>
+  );
+}
+
+function scopeTitle(scope: CrScope) {
+  const titles: Record<CrScope, string> = {
+    mine: "My CRs",
+    all: "All CRs",
+    attention: "Needs Attention",
+    dueSoon: "Due Soon",
+    actions: "Actions",
+    approvals: "Approvals",
+    complete: "Complete",
+  };
+  return titles[scope];
+}
+
+function buildScopeCounts(crs: Cr[], localOwner: string) {
+  return {
+    mine: crs.filter((cr) => belongsToLocalOwner(cr, localOwner)).length,
+    all: crs.length,
+    attention: crs.filter((cr) => needsAttention(cr)).length,
+    dueSoon: crs.filter((cr) => isDueSoon(cr)).length,
+    actions: crs.filter((cr) => hasActionWork(cr)).length,
+    approvals: crs.filter((cr) => hasApprovalWork(cr)).length,
+    complete: crs.filter((cr) => isTerminal(cr.status)).length,
+  };
+}
+
+function buildBoardCounts(crs: Cr[]) {
+  const counts: Record<BoardFilter, number> = {
+    All: crs.length,
+    "PWES Commercial": 0,
+    "PWES Military": 0,
+    "EC&A": 0,
+    "P&C": 0,
+    Other: 0,
+  };
+
+  for (const cr of crs) {
+    counts[cr.eccBoard ?? "Other"] += 1;
+  }
+
+  return counts;
+}
+
+function crMatchesScope(cr: Cr, scope: CrScope, localOwner: string) {
+  if (scope === "mine") {
+    return belongsToLocalOwner(cr, localOwner);
+  }
+  if (scope === "attention") {
+    return needsAttention(cr);
+  }
+  if (scope === "dueSoon") {
+    return isDueSoon(cr);
+  }
+  if (scope === "actions") {
+    return hasActionWork(cr);
+  }
+  if (scope === "approvals") {
+    return hasApprovalWork(cr);
+  }
+  if (scope === "complete") {
+    return isTerminal(cr.status);
+  }
+  return true;
+}
+
+function belongsToLocalOwner(cr: Cr, localOwner: string) {
+  const normalized = localOwner.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return [cr.owner, cr.requester].some(
+    (value) => value.trim().toLowerCase() === normalized,
+  );
+}
+
+function needsAttention(cr: Cr) {
+  const days = daysUntil(cr.targetDate);
+  return (
+    cr.status === "Blocked" ||
+    cr.status === "Held for Actions" ||
+    cr.risk === "High" ||
+    cr.oocApprovalStatus === "Blocked" ||
+    cr.preMeetingReviewStatus === "Blocked" ||
+    cr.documentationNotificationStatus === "Blocked" ||
+    (days !== null && days < 0 && !isTerminal(cr.status))
+  );
+}
+
+function hasActionWork(cr: Cr) {
+  return (
+    cr.status === "Held for Actions" ||
+    cr.status === "Approved w/Actions" ||
+    cr.preMeetingReviewStatus === "Blocked" ||
+    cr.oocApprovalStatus === "Blocked"
+  );
+}
+
+function hasApprovalWork(cr: Cr) {
+  return (
+    cr.status === "Pending OOC Approvals" ||
+    cr.oocApprovalStatus === "In Progress" ||
+    cr.oocApprovalStatus === "Blocked" ||
+    cr.chairApprovalStatus === "In Progress" ||
+    cr.chairApprovalStatus === "Blocked"
   );
 }
 
