@@ -20,7 +20,6 @@ import {
   Search,
   Send,
   SlidersHorizontal,
-  Sparkles,
   UserRound,
   X,
 } from "lucide-react";
@@ -120,7 +119,6 @@ const statuses: CrStatus[] = [
   "Blocked",
   "Held for Actions",
   "Pending OOC Approvals",
-  "Testing",
   "Implemented",
   "Waiver Processing",
   "NCDOC/xClass",
@@ -131,6 +129,9 @@ const statuses: CrStatus[] = [
 
 const priorities: Priority[] = ["Low", "Medium", "High", "Critical"];
 const risks: Risk[] = ["Low", "Medium", "High"];
+const neutralBadge = "border-[#d4d4d4] bg-white text-[#171717]";
+const neutralBadgeSoft = "border-[#d4d4d4] bg-[#f5f5f5] text-[#262626]";
+const neutralBadgeDark = "border-[#171717] bg-[#171717] text-white";
 const eccBoards: EccBoard[] = [
   "PWES Commercial",
   "PWES Military",
@@ -182,42 +183,40 @@ const approvalSources: ApprovalSource[] = [
 ];
 
 const statusTone: Record<CrStatus, string> = {
-  Intake: "border-[#cbd5d1] bg-[#eef2f0] text-[#33413e]",
-  "Documentation Pending": "border-[#fed7aa] bg-[#fff7ed] text-[#c2410c]",
-  "Ready for Review": "border-[#86efac] bg-[#ecfdf3] text-[#166534]",
-  "Meeting Scheduled": "border-[#67e8f9] bg-[#ecfeff] text-[#155e75]",
-  Review: "border-[#a5b4fc] bg-[#eef2ff] text-[#3730a3]",
-  Approved: "border-[#86efac] bg-[#ecfdf3] text-[#166534]",
-  "Approved w/Actions": "border-[#bef264] bg-[#f7fee7] text-[#3f6212]",
-  "In Progress": "border-[#67e8f9] bg-[#ecfeff] text-[#155e75]",
-  Blocked: "border-[#fecaca] bg-[#fef2f2] text-[#b91c1c]",
-  "Held for Actions": "border-[#fecaca] bg-[#fff1f2] text-[#be123c]",
-  "Pending OOC Approvals": "border-[#fde68a] bg-[#fffbeb] text-[#92400e]",
-  Testing: "border-[#fde68a] bg-[#fffbeb] text-[#92400e]",
-  Implemented: "border-[#bbf7d0] bg-[#f0fdf4] text-[#15803d]",
-  "Waiver Processing": "border-[#ddd6fe] bg-[#f5f3ff] text-[#6d28d9]",
-  "NCDOC/xClass": "border-[#bae6fd] bg-[#f0f9ff] text-[#0369a1]",
-  "CM Working List": "border-[#c7d2fe] bg-[#eef2ff] text-[#4338ca]",
-  Closed: "border-[#bbf7d0] bg-[#f0fdf4] text-[#15803d]",
-  Rejected: "border-[#d6d3d1] bg-[#f5f5f4] text-[#57534e]",
+  Intake: neutralBadgeSoft,
+  "Documentation Pending": neutralBadgeSoft,
+  "Ready for Review": neutralBadge,
+  "Meeting Scheduled": neutralBadge,
+  Review: neutralBadge,
+  Approved: neutralBadgeDark,
+  "Approved w/Actions": neutralBadgeDark,
+  "In Progress": neutralBadge,
+  Blocked: neutralBadgeDark,
+  "Held for Actions": neutralBadgeDark,
+  "Pending OOC Approvals": neutralBadgeSoft,
+  Implemented: neutralBadgeDark,
+  "Waiver Processing": neutralBadgeSoft,
+  "NCDOC/xClass": neutralBadgeSoft,
+  "CM Working List": neutralBadgeSoft,
+  Closed: neutralBadgeDark,
+  Rejected: neutralBadgeSoft,
 };
 
 const priorityTone: Record<Priority, string> = {
-  Low: "border-[#cbd5d1] bg-white text-[#596466]",
-  Medium: "border-[#bae6fd] bg-[#f0f9ff] text-[#0369a1]",
-  High: "border-[#fed7aa] bg-[#fff7ed] text-[#c2410c]",
-  Critical: "border-[#fecaca] bg-[#fef2f2] text-[#b91c1c]",
+  Low: neutralBadge,
+  Medium: neutralBadgeSoft,
+  High: "border-[#737373] bg-[#e5e5e5] text-[#171717]",
+  Critical: neutralBadgeDark,
 };
 
 const riskTone: Record<Risk, string> = {
-  Low: "text-[#15803d]",
-  Medium: "text-[#b45309]",
-  High: "text-[#b91c1c]",
+  Low: "text-[#525252]",
+  Medium: "text-[#262626]",
+  High: "text-[#111111]",
 };
 
 export function CrTrackerApp() {
   const crs = useQuery(api.crs.list, { status: "All" });
-  const seedDemoData = useMutation(api.crs.seedDemoData);
   const createCr = useMutation(api.crs.create);
   const [selectedId, setSelectedId] = useState<CrId | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -280,16 +279,6 @@ export function CrTrackerApp() {
 
   const stats = useMemo(() => buildStats(crs ?? []), [crs]);
 
-  async function handleSeed() {
-    setNotice("");
-    const result = await seedDemoData({});
-    setNotice(
-      result.skipped
-        ? "Seed skipped because CRs already exist."
-        : `Loaded ${result.inserted} demo CRs.`,
-    );
-  }
-
   function handleExport() {
     const payload = JSON.stringify(filteredCrs, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
@@ -302,35 +291,31 @@ export function CrTrackerApp() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f4f6f5] text-[#1d2224]">
-      <header className="border-b border-[#d7dfda] bg-white">
+    <div className="min-h-screen bg-[#f5f5f5] text-[#111111]">
+      <header className="border-b border-[#d4d4d4] bg-white">
         <div className="mx-auto flex max-w-[1680px] flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between md:px-6">
           <div>
-            <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase text-[#0f766e]">
+            <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase text-[#262626]">
               <CircleDot className="h-3.5 w-3.5" />
               Local change control
             </div>
             <h1 className="text-2xl font-semibold tracking-normal">
               CR Control Room
             </h1>
-            <p className="mt-1 max-w-3xl text-sm text-[#596466]">
+            <p className="mt-1 max-w-3xl text-sm text-[#525252]">
               Track change requests, owner risk, due dates, and update history
               with a local Convex backend and a local Qwen assistant.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {notice ? (
-              <span className="rounded-md border border-[#d7dfda] bg-[#f8faf9] px-3 py-2 text-xs text-[#596466]">
+              <span className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] px-3 py-2 text-xs text-[#525252]">
                 {notice}
               </span>
             ) : null}
             <Button variant="outline" onClick={handleExport}>
               <Download className="h-4 w-4" />
               Export
-            </Button>
-            <Button variant="outline" onClick={handleSeed}>
-              <Sparkles className="h-4 w-4" />
-              Seed Demo
             </Button>
             <Button onClick={() => setIsCreating(true)}>
               <Plus className="h-4 w-4" />
@@ -392,28 +377,28 @@ function MetricStrip({ stats }: { stats: ReturnType<typeof buildStats> }) {
       label: "Open",
       value: stats.open,
       detail: `${stats.total} total active`,
-      tone: "bg-[#0f766e]",
+      tone: "bg-[#171717]",
       icon: CircleDot,
     },
     {
       label: "Blocked",
       value: stats.blocked,
       detail: "Needs intervention",
-      tone: "bg-[#dc2626]",
+      tone: "bg-[#525252]",
       icon: AlertTriangle,
     },
     {
       label: "Due Soon",
       value: stats.dueSoon,
       detail: "Next 14 days",
-      tone: "bg-[#d97706]",
+      tone: "bg-[#737373]",
       icon: CalendarClock,
     },
     {
       label: "High Risk",
       value: stats.highRisk,
       detail: "Risk marked high",
-      tone: "bg-[#4f46e5]",
+      tone: "bg-[#262626]",
       icon: SlidersHorizontal,
     },
   ];
@@ -425,15 +410,15 @@ function MetricStrip({ stats }: { stats: ReturnType<typeof buildStats> }) {
         return (
           <div
             key={metric.label}
-            className="rounded-lg border border-[#d7dfda] bg-white p-4 shadow-sm"
+            className="rounded-lg border border-[#d4d4d4] bg-white p-4 shadow-sm"
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-xs font-medium uppercase text-[#596466]">
+                <p className="text-xs font-medium uppercase text-[#525252]">
                   {metric.label}
                 </p>
                 <p className="mt-2 text-3xl font-semibold">{metric.value}</p>
-                <p className="mt-1 text-xs text-[#596466]">{metric.detail}</p>
+                <p className="mt-1 text-xs text-[#525252]">{metric.detail}</p>
               </div>
               <span
                 className={cn(
@@ -477,10 +462,10 @@ function FilterBar({
   onSearchChange: (value: string) => void;
 }) {
   return (
-    <section className="rounded-lg border border-[#d7dfda] bg-white p-3 shadow-sm">
+    <section className="rounded-lg border border-[#d4d4d4] bg-white p-3 shadow-sm">
       <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_repeat(4,minmax(120px,170px))]">
         <label className="relative">
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#7c8788]" />
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-[#737373]" />
           <Input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
@@ -546,11 +531,11 @@ function NewCrPanel({
   }
 
   return (
-    <section className="rounded-lg border border-[#b9d8d3] bg-white p-4 shadow-sm">
+    <section className="rounded-lg border border-[#d4d4d4] bg-white p-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold">New CR</h2>
-          <p className="text-sm text-[#596466]">
+          <p className="text-sm text-[#525252]">
             Capture the request, impact, risk, owner, and target date.
           </p>
         </div>
@@ -582,25 +567,25 @@ function CrList({
   onSelect: (id: CrId) => void;
 }) {
   return (
-    <section className="min-h-[520px] rounded-lg border border-[#d7dfda] bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-[#d7dfda] px-4 py-3">
+    <section className="min-h-[520px] rounded-lg border border-[#d4d4d4] bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-[#d4d4d4] px-4 py-3">
         <div>
           <h2 className="text-base font-semibold">Change Requests</h2>
-          <p className="text-xs text-[#596466]">{crs.length} shown</p>
+          <p className="text-xs text-[#525252]">{crs.length} shown</p>
         </div>
         <RefreshCw
-          className={cn("h-4 w-4 text-[#7c8788]", loading && "animate-spin")}
+          className={cn("h-4 w-4 text-[#737373]", loading && "animate-spin")}
         />
       </div>
-      <div className="divide-y divide-[#e5ebe8]">
+      <div className="divide-y divide-[#e5e5e5]">
         {loading ? (
-          <div className="flex h-40 items-center justify-center text-sm text-[#596466]">
+          <div className="flex h-40 items-center justify-center text-sm text-[#525252]">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             Loading CRs
           </div>
         ) : null}
         {!loading && crs.length === 0 ? (
-          <div className="p-6 text-sm text-[#596466]">
+          <div className="p-6 text-sm text-[#525252]">
             No CRs match the current filters.
           </div>
         ) : null}
@@ -609,14 +594,14 @@ function CrList({
             key={cr._id}
             onClick={() => onSelect(cr._id)}
             className={cn(
-              "block w-full px-4 py-3 text-left transition hover:bg-[#f8faf9]",
-              selectedId === cr._id && "bg-[#eef8f7]",
+              "block w-full px-4 py-3 text-left transition hover:bg-[#f5f5f5]",
+              selectedId === cr._id && "bg-[#eeeeee]",
             )}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs font-semibold text-[#0f766e]">
+                  <span className="font-mono text-xs font-semibold text-[#171717]">
                     {cr.crNumber}
                   </span>
                   <Badge className={statusTone[cr.status]}>{cr.status}</Badge>
@@ -627,12 +612,12 @@ function CrList({
               </div>
               <div className="flex flex-col items-end gap-1">
                 <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
-                <span className="text-xs text-[#596466]">
+                <span className="text-xs text-[#525252]">
                   {cr.currentGate ?? "No gate"}
                 </span>
               </div>
             </div>
-            <div className="mt-3 grid gap-2 text-xs text-[#596466] sm:grid-cols-2">
+            <div className="mt-3 grid gap-2 text-xs text-[#525252] sm:grid-cols-2">
               <span className="flex min-w-0 items-center gap-1.5">
                 <UserRound className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{cr.owner}</span>
@@ -682,9 +667,9 @@ function CrDetails({ cr }: { cr: Cr | null }) {
 
   if (!cr) {
     return (
-      <section className="rounded-lg border border-[#d7dfda] bg-white p-6 shadow-sm">
+      <section className="rounded-lg border border-[#d4d4d4] bg-white p-6 shadow-sm">
         <h2 className="text-base font-semibold">CR Detail</h2>
-        <p className="mt-2 text-sm text-[#596466]">
+        <p className="mt-2 text-sm text-[#525252]">
           Select a CR or create a new one to see details here.
         </p>
       </section>
@@ -743,25 +728,25 @@ function CrDetails({ cr }: { cr: Cr | null }) {
   }
 
   return (
-    <section className="rounded-lg border border-[#d7dfda] bg-white shadow-sm">
-      <div className="border-b border-[#d7dfda] px-4 py-3">
+    <section className="rounded-lg border border-[#d4d4d4] bg-white shadow-sm">
+      <div className="border-b border-[#d4d4d4] px-4 py-3">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs font-semibold text-[#0f766e]">
+              <span className="font-mono text-xs font-semibold text-[#171717]">
                 {cr.crNumber}
               </span>
               <Badge className={statusTone[cr.status]}>{cr.status}</Badge>
               <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
-              <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+              <Badge className={neutralBadge}>
                 {cr.eccBoard ?? "Other"}
               </Badge>
-              <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+              <Badge className={neutralBadge}>
                 {cr.classification ?? "TBD"} / {cr.currentGate ?? "None"}
               </Badge>
             </div>
             <h2 className="text-lg font-semibold">{cr.title}</h2>
-            <p className="mt-1 text-sm text-[#596466]">
+            <p className="mt-1 text-sm text-[#525252]">
               {cr.system} / {cr.category}
             </p>
           </div>
@@ -818,7 +803,7 @@ function CrDetails({ cr }: { cr: Cr | null }) {
               value={(cr.quorum ?? []).join(", ") || "Not set"}
             />
             <div>
-              <p className="mb-2 text-xs font-semibold uppercase text-[#596466]">
+              <p className="mb-2 text-xs font-semibold uppercase text-[#525252]">
                 Tags
               </p>
               <div className="flex flex-wrap gap-2">
@@ -826,20 +811,20 @@ function CrDetails({ cr }: { cr: Cr | null }) {
                   cr.tags.map((tag) => (
                     <span
                       key={tag}
-                      className="rounded-md border border-[#d7dfda] bg-[#f8faf9] px-2 py-1 text-xs"
+                      className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] px-2 py-1 text-xs"
                     >
                       {tag}
                     </span>
                   ))
                 ) : (
-                  <span className="text-sm text-[#596466]">No tags</span>
+                  <span className="text-sm text-[#525252]">No tags</span>
                 )}
               </div>
             </div>
           </div>
         )}
 
-        <div className="mt-6 border-t border-[#e5ebe8] pt-4">
+        <div className="mt-6 border-t border-[#e5e5e5] pt-4">
           <ActionsApprovalsPanel
             cr={cr}
             actions={actions ?? []}
@@ -853,11 +838,11 @@ function CrDetails({ cr }: { cr: Cr | null }) {
           />
         </div>
 
-        <div className="mt-6 border-t border-[#e5ebe8] pt-4">
+        <div className="mt-6 border-t border-[#e5e5e5] pt-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold">Update Notes</h3>
             {saving ? (
-              <Loader2 className="h-4 w-4 animate-spin text-[#0f766e]" />
+              <Loader2 className="h-4 w-4 animate-spin text-[#171717]" />
             ) : null}
           </div>
           <div className="flex gap-2">
@@ -877,10 +862,10 @@ function CrDetails({ cr }: { cr: Cr | null }) {
               Add
             </Button>
           </div>
-          {error ? <p className="mt-2 text-sm text-[#b91c1c]">{error}</p> : null}
+          {error ? <p className="mt-2 text-sm font-medium text-[#111111]">{error}</p> : null}
           <div className="mt-4 space-y-3">
             {!updates ? (
-              <p className="text-sm text-[#596466]">Loading updates...</p>
+              <p className="text-sm text-[#525252]">Loading updates...</p>
             ) : null}
             {updates?.map((update) => (
               <UpdateItem key={update._id} update={update} />
@@ -908,16 +893,16 @@ function WorkflowSummary({ cr }: { cr: Cr }) {
 
   return (
     <div>
-      <p className="mb-2 text-xs font-semibold uppercase text-[#596466]">
+      <p className="mb-2 text-xs font-semibold uppercase text-[#525252]">
         ECC Workflow
       </p>
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
         {milestones.map(([label, state]) => (
           <div
             key={label}
-            className="rounded-md border border-[#d7dfda] bg-[#f8faf9] p-2"
+            className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] p-2"
           >
-            <p className="text-[11px] font-semibold uppercase text-[#596466]">
+            <p className="text-[11px] font-semibold uppercase text-[#525252]">
               {label}
             </p>
             <p className={cn("mt-1 text-xs font-medium", taskStateTone(state))}>
@@ -1077,15 +1062,15 @@ function ActionsApprovalsPanel({
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Actions and OOC Approvals</h3>
         {loading || saving ? (
-          <Loader2 className="h-4 w-4 animate-spin text-[#0f766e]" />
+          <Loader2 className="h-4 w-4 animate-spin text-[#171717]" />
         ) : null}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-lg border border-[#d7dfda] p-3">
+        <div className="rounded-lg border border-[#d4d4d4] p-3">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold">Open Actions</p>
-            <span className="text-xs text-[#596466]">
+            <span className="text-xs text-[#525252]">
               {actions.filter((action) => action.status !== "Closed").length} open
             </span>
           </div>
@@ -1138,19 +1123,19 @@ function ActionsApprovalsPanel({
           </form>
           <div className="mt-3 space-y-2">
             {actions.length === 0 ? (
-              <p className="text-sm text-[#596466]">No actions recorded.</p>
+              <p className="text-sm text-[#525252]">No actions recorded.</p>
             ) : null}
             {actions.map((action) => (
-              <div key={action._id} className="rounded-md bg-[#f8faf9] p-3 text-sm">
+              <div key={action._id} className="rounded-md bg-[#f5f5f5] p-3 text-sm">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                  <Badge className={neutralBadge}>
                     {action.gate}
                   </Badge>
                   <span className={taskStateTone(action.status)}>{action.status}</span>
-                  <span className="text-xs text-[#596466]">{action.owner}</span>
+                  <span className="text-xs text-[#525252]">{action.owner}</span>
                 </div>
                 <p>{action.body}</p>
-                <p className="mt-1 text-xs text-[#596466]">
+                <p className="mt-1 text-xs text-[#525252]">
                   Due: {action.dueDate ?? "None"} / Evidence:{" "}
                   {action.evidenceLocation || "Not set"}
                 </p>
@@ -1159,7 +1144,7 @@ function ActionsApprovalsPanel({
                     <button
                       key={status}
                       onClick={() => void handleActionStatus(action._id, status)}
-                      className="rounded-md border border-[#d7dfda] bg-white px-2 py-1 text-xs hover:border-[#0f766e]"
+                      className="rounded-md border border-[#d4d4d4] bg-white px-2 py-1 text-xs hover:border-[#171717]"
                       type="button"
                     >
                       {status}
@@ -1171,10 +1156,10 @@ function ActionsApprovalsPanel({
           </div>
         </div>
 
-        <div className="rounded-lg border border-[#d7dfda] p-3">
+        <div className="rounded-lg border border-[#d4d4d4] p-3">
           <div className="mb-3 flex items-center justify-between">
             <p className="text-sm font-semibold">Approvals</p>
-            <span className="text-xs text-[#596466]">
+            <span className="text-xs text-[#525252]">
               {
                 approvals.filter(
                   (approval) =>
@@ -1245,26 +1230,26 @@ function ActionsApprovalsPanel({
           </form>
           <div className="mt-3 space-y-2">
             {approvals.length === 0 ? (
-              <p className="text-sm text-[#596466]">No approvals recorded.</p>
+              <p className="text-sm text-[#525252]">No approvals recorded.</p>
             ) : null}
             {approvals.map((approval) => (
               <div
                 key={approval._id}
-                className="rounded-md bg-[#f8faf9] p-3 text-sm"
+                className="rounded-md bg-[#f5f5f5] p-3 text-sm"
               >
                 <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <Badge className="border-[#cbd5d1] bg-white text-[#33413e]">
+                  <Badge className={neutralBadge}>
                     {approval.gate}
                   </Badge>
                   <span className={taskStateTone(approval.status)}>
                     {approval.status}
                   </span>
-                  <span className="text-xs text-[#596466]">
+                  <span className="text-xs text-[#525252]">
                     {approval.source}
                   </span>
                 </div>
                 <p className="font-medium">{approval.approverName}</p>
-                <p className="text-xs text-[#596466]">
+                <p className="text-xs text-[#525252]">
                   {approval.role} / Evidence: {approval.evidenceLocation || "Not set"}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -1274,7 +1259,7 @@ function ActionsApprovalsPanel({
                       onClick={() =>
                         void handleApprovalStatus(approval._id, status)
                       }
-                      className="rounded-md border border-[#d7dfda] bg-white px-2 py-1 text-xs hover:border-[#0f766e]"
+                      className="rounded-md border border-[#d4d4d4] bg-white px-2 py-1 text-xs hover:border-[#171717]"
                       type="button"
                     >
                       {status}
@@ -1367,20 +1352,20 @@ function AssistantPanel({ selectedCr }: { selectedCr: Cr | null }) {
   ];
 
   return (
-    <aside className="flex max-h-[calc(100vh-112px)] min-h-[680px] flex-col rounded-lg border border-[#d7dfda] bg-white shadow-sm xl:sticky xl:top-4">
-      <div className="border-b border-[#d7dfda] p-4">
+    <aside className="flex max-h-[calc(100vh-112px)] min-h-[680px] flex-col rounded-lg border border-[#d4d4d4] bg-white shadow-sm xl:sticky xl:top-4">
+      <div className="border-b border-[#d4d4d4] p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-[#0f766e] text-white">
+            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-[#171717] text-white">
               <Bot className="h-5 w-5" />
             </span>
             <div>
               <h2 className="text-base font-semibold">Local Qwen Assistant</h2>
-              <p className="text-xs text-[#596466]">Ollama model: {model}</p>
+              <p className="text-xs text-[#525252]">Ollama model: {model}</p>
             </div>
           </div>
           {asking ? (
-            <Loader2 className="h-4 w-4 animate-spin text-[#0f766e]" />
+            <Loader2 className="h-4 w-4 animate-spin text-[#171717]" />
           ) : null}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -1388,7 +1373,7 @@ function AssistantPanel({ selectedCr }: { selectedCr: Cr | null }) {
             <button
               key={prompt}
               onClick={() => void ask(prompt)}
-              className="rounded-md border border-[#d7dfda] bg-[#f8faf9] px-2.5 py-1.5 text-left text-xs text-[#33413e] transition hover:border-[#0f766e] hover:text-[#0f766e]"
+              className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] px-2.5 py-1.5 text-left text-xs text-[#262626] transition hover:border-[#171717] hover:text-[#171717]"
             >
               {prompt}
             </button>
@@ -1402,18 +1387,18 @@ function AssistantPanel({ selectedCr }: { selectedCr: Cr | null }) {
             className={cn(
               "rounded-lg border p-3 text-sm leading-relaxed",
               message.role === "user"
-                ? "ml-8 border-[#b9d8d3] bg-[#eef8f7]"
-                : "mr-8 border-[#d7dfda] bg-[#f8faf9]",
+                ? "ml-8 border-[#a3a3a3] bg-[#eeeeee]"
+                : "mr-8 border-[#d4d4d4] bg-[#f5f5f5]",
             )}
           >
-            <p className="mb-1 text-xs font-semibold uppercase text-[#596466]">
+            <p className="mb-1 text-xs font-semibold uppercase text-[#525252]">
               {message.role === "user" ? "You" : "Qwen"}
             </p>
             <p className="whitespace-pre-wrap">{message.content}</p>
           </div>
         ))}
       </div>
-      <form onSubmit={handleSubmit} className="border-t border-[#d7dfda] p-3">
+      <form onSubmit={handleSubmit} className="border-t border-[#d4d4d4] p-3">
         <div className="flex gap-2">
           <Input
             value={input}
@@ -1523,8 +1508,8 @@ function CrForm({
           onChange={(value) => updateField("targetDate", value)}
         />
       </div>
-      <div className="border-t border-[#e5ebe8] pt-4">
-        <p className="mb-3 text-xs font-semibold uppercase text-[#596466]">
+      <div className="border-t border-[#e5e5e5] pt-4">
+        <p className="mb-3 text-xs font-semibold uppercase text-[#525252]">
           ECC Routing
         </p>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1602,8 +1587,8 @@ function CrForm({
           />
         </div>
       </div>
-      <div className="border-t border-[#e5ebe8] pt-4">
-        <p className="mb-3 text-xs font-semibold uppercase text-[#596466]">
+      <div className="border-t border-[#e5e5e5] pt-4">
+        <p className="mb-3 text-xs font-semibold uppercase text-[#525252]">
           ECC Milestones
         </p>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
@@ -1708,7 +1693,7 @@ function CrForm({
         onChange={(value) => updateField("tagsInput", value)}
         placeholder="comma separated"
       />
-      {error ? <p className="text-sm text-[#b91c1c]">{error}</p> : null}
+      {error ? <p className="text-sm font-medium text-[#111111]">{error}</p> : null}
       <div className="flex justify-end">
         <Button type="submit" disabled={saving}>
           {saving ? (
@@ -1742,7 +1727,7 @@ function Field({
 }) {
   return (
     <label className={cn("block", className)}>
-      <span className="mb-1 block text-xs font-semibold uppercase text-[#596466]">
+      <span className="mb-1 block text-xs font-semibold uppercase text-[#525252]">
         {label}
       </span>
       <Input
@@ -1767,7 +1752,7 @@ function CheckboxField({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase text-[#596466]">
+      <span className="mb-1 block text-xs font-semibold uppercase text-[#525252]">
         {label}
       </span>
       <span className="flex h-9 items-center gap-2 rounded-md border border-input bg-white px-3 text-sm shadow-sm">
@@ -1775,7 +1760,7 @@ function CheckboxField({
           type="checkbox"
           checked={checked}
           onChange={(event) => onChange(event.target.checked)}
-          className="h-4 w-4 accent-[#0f766e]"
+          className="h-4 w-4 accent-[#171717]"
         />
         <span>{checked ? "Yes" : "No"}</span>
       </span>
@@ -1796,7 +1781,7 @@ function Select({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase text-[#596466]">
+      <span className="mb-1 block text-xs font-semibold uppercase text-[#525252]">
         {label}
       </span>
       <select
@@ -1825,7 +1810,7 @@ function Textarea({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase text-[#596466]">
+      <span className="mb-1 block text-xs font-semibold uppercase text-[#525252]">
         {label}
       </span>
       <textarea
@@ -1866,8 +1851,8 @@ function Info({
   valueClassName?: string;
 }) {
   return (
-    <div className="rounded-md border border-[#d7dfda] bg-[#f8faf9] p-3">
-      <p className="text-xs font-semibold uppercase text-[#596466]">{label}</p>
+    <div className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] p-3">
+      <p className="text-xs font-semibold uppercase text-[#525252]">{label}</p>
       <p className={cn("mt-1 truncate text-sm font-medium", valueClassName)}>
         {value}
       </p>
@@ -1878,10 +1863,10 @@ function Info({
 function TextBlock({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-semibold uppercase text-[#596466]">
+      <p className="mb-1 text-xs font-semibold uppercase text-[#525252]">
         {label}
       </p>
-      <p className="rounded-md border border-[#d7dfda] bg-[#f8faf9] p-3 text-sm leading-relaxed">
+      <p className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] p-3 text-sm leading-relaxed">
         {value}
       </p>
     </div>
@@ -1890,12 +1875,12 @@ function TextBlock({ label, value }: { label: string; value: string }) {
 
 function UpdateItem({ update }: { update: CrUpdate }) {
   return (
-    <div className="rounded-md border border-[#d7dfda] bg-[#f8faf9] p-3 text-sm">
-      <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[#596466]">
-        <span className="font-semibold text-[#33413e]">{update.author}</span>
+    <div className="rounded-md border border-[#d4d4d4] bg-[#f5f5f5] p-3 text-sm">
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-[#525252]">
+        <span className="font-semibold text-[#262626]">{update.author}</span>
         <span>{formatTimestamp(update.createdAt)}</span>
         {update.kind === "status" ? (
-          <span className="inline-flex items-center gap-1 text-[#0f766e]">
+          <span className="inline-flex items-center gap-1 text-[#171717]">
             <CheckCircle2 className="h-3.5 w-3.5" />
             status
           </span>
@@ -2131,18 +2116,18 @@ function taskStateTone(state: string) {
     state === "Approved" ||
     state === "Not Holding"
   ) {
-    return "text-[#15803d]";
+    return "text-[#171717]";
   }
   if (state === "Blocked" || state === "Rejected") {
-    return "text-[#b91c1c]";
+    return "text-[#111111]";
   }
   if (state === "In Progress" || state === "Sent" || state === "Open") {
-    return "text-[#0369a1]";
+    return "text-[#262626]";
   }
   if (state === "Needed") {
-    return "text-[#b45309]";
+    return "text-[#404040]";
   }
-  return "text-[#596466]";
+  return "text-[#525252]";
 }
 
 function todayInput() {

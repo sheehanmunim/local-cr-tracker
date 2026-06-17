@@ -13,7 +13,6 @@ downloadable GitHub project with:
 - Create, edit, archive, filter, and export CRs
 - Track status, priority, risk, owner, requester, system, due date, impact, and technical notes
 - Add update notes and status-change history
-- Seed demo CRs for first-run testing
 - Ask a local Qwen model about blockers, ownership, risk, and review priorities
 
 ## Requirements

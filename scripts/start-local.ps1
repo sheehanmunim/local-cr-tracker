@@ -13,14 +13,14 @@ function Write-Step {
   Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-function Test-Command {
+function Has-Command {
   param([string]$Name)
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
 function Add-CommonPath {
   param([string]$PathToAdd)
-  if ((Test-Path $PathToAdd) -and ($env:Path -notlike "*$PathToAdd*")) {
+  if ([System.IO.Directory]::Exists($PathToAdd) -and ($env:Path -notlike "*$PathToAdd*")) {
     $env:Path = "$PathToAdd;$env:Path"
   }
 }
@@ -30,8 +30,8 @@ function Refresh-LocalPath {
   Add-CommonPath "$env:LOCALAPPDATA\Programs\Ollama"
 }
 
-function Test-NodeSupported {
-  if (-not (Test-Command "node")) {
+function Has-SupportedNode {
+  if (-not (Has-Command "node")) {
     return $false
   }
 
@@ -41,7 +41,7 @@ function Test-NodeSupported {
 }
 
 function Require-Winget {
-  if (-not (Test-Command "winget")) {
+  if (-not (Has-Command "winget")) {
     throw "This script can install missing tools on Windows with winget, but winget was not found. Install App Installer from the Microsoft Store, then rerun this script."
   }
 }
@@ -70,21 +70,21 @@ if ($SetupOnly) {
 
 Refresh-LocalPath
 
-if (-not (Test-NodeSupported)) {
+if (-not (Has-SupportedNode)) {
   Install-WithWinget -PackageId "OpenJS.NodeJS.LTS" -Name "Node.js LTS"
 }
 
 Refresh-LocalPath
 
-if (-not (Test-NodeSupported)) {
+if (-not (Has-SupportedNode)) {
   throw "Node.js 20 or newer is required, and the automatic install did not make it available in this terminal. Reopen PowerShell and rerun this script."
 }
 
-if (-not (Test-Command "npm")) {
+if (-not (Has-Command "npm")) {
   throw "Node.js was installed, but npm is not available in this terminal yet. Close and reopen PowerShell, then rerun .\scripts\start-local.ps1."
 }
 
-if (-not (Test-Command "ollama")) {
+if (-not (Has-Command "ollama")) {
   Install-WithWinget -PackageId "Ollama.Ollama" -Name "Ollama"
 }
 

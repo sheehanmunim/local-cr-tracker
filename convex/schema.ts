@@ -13,7 +13,6 @@ const crStatus = v.union(
   v.literal("Blocked"),
   v.literal("Held for Actions"),
   v.literal("Pending OOC Approvals"),
-  v.literal("Testing"),
   v.literal("Implemented"),
   v.literal("Waiver Processing"),
   v.literal("NCDOC/xClass"),

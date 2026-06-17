@@ -14,7 +14,6 @@ const crStatus = v.union(
   v.literal("Blocked"),
   v.literal("Held for Actions"),
   v.literal("Pending OOC Approvals"),
-  v.literal("Testing"),
   v.literal("Implemented"),
   v.literal("Waiver Processing"),
   v.literal("NCDOC/xClass"),
@@ -105,7 +104,6 @@ const statusFilter = v.union(
   v.literal("Blocked"),
   v.literal("Held for Actions"),
   v.literal("Pending OOC Approvals"),
-  v.literal("Testing"),
   v.literal("Implemented"),
   v.literal("Waiver Processing"),
   v.literal("NCDOC/xClass"),
@@ -722,39 +720,6 @@ export const updateApprovalStatus = mutation({
   },
 });
 
-export const seedDemoData = mutation({
-  args: {},
-  handler: async (ctx) => {
-    const existing = await ctx.db
-      .query("crs")
-      .withIndex("by_isArchived", (q) => q.eq("isArchived", false))
-      .take(1);
-
-    if (existing.length > 0) {
-      return { inserted: 0, skipped: true };
-    }
-
-    const now = Date.now();
-    const demo = demoCrs();
-    for (const item of demo) {
-      const crId = await ctx.db.insert("crs", {
-        ...item,
-        isArchived: false,
-        lastUpdatedAt: now,
-      });
-      await ctx.db.insert("crUpdates", {
-        crId,
-        author: "System",
-        body: item.status === "Blocked" ? "Imported with blocker." : "Demo CR loaded.",
-        kind: "created",
-        createdAt: now,
-      });
-    }
-
-    return { inserted: demo.length, skipped: false };
-  },
-});
-
 export const assistantContext = query({
   args: { limit: v.number() },
   handler: async (ctx, args) => {
@@ -912,188 +877,4 @@ function cleanList(items: string[]) {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function dateFromToday(days: number) {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-type DemoCr = Omit<
-  Doc<"crs">,
-  "_id" | "_creationTime" | "isArchived" | "lastUpdatedAt"
->;
-
-function demoCrs(): DemoCr[] {
-  return [
-    {
-      crNumber: "CR-2026-014",
-      title: "Replace field inspection intake form",
-      status: "Meeting Scheduled",
-      priority: "High",
-      risk: "Medium",
-      category: "Workflow",
-      owner: "Nadia Patel",
-      requester: "Field Operations",
-      system: "Inspection Portal",
-      targetDate: dateFromToday(12),
-      submittedDate: dateFromToday(-8),
-      description:
-        "Move the inspection intake from email attachments into a structured web form with required asset and location fields.",
-      businessImpact:
-        "Reduces rework from missing inspection details and gives dispatch a cleaner queue.",
-      technicalNotes:
-        "Needs validation for asset identifiers and a CSV export for current downstream reporting.",
-      tags: ["inspection", "forms", "ops"],
-      eccBoard: "PWES Commercial",
-      classification: "Class II",
-      currentGate: "CII",
-      meetingDate: dateFromToday(3),
-      documentationDeadline: dateFromToday(1),
-      crFolderPath: "CR-2026-014 - PWES - Inspection Portal",
-      wbsChargeNumber: "WBS-014",
-      chargeNumberActive: true,
-      quorum: ["ECC Chair", "Program Chief", "Design Assurance"],
-      documentationNotificationStatus: "Complete",
-      preMeetingReviewStatus: "In Progress",
-      meetingAttendanceStatus: "Not Started",
-      postMeetingPdfStatus: "Not Started",
-      ncdocStatus: "Not Started",
-      xclassStatus: "Not Started",
-      oocApprovalStatus: "Not Started",
-      chairApprovalStatus: "Not Started",
-      closureNotificationStatus: "Not Started",
-      cmWorkingListStatus: "Not Started",
-      waiverOption: null,
-      designAuthority: "LHSWLPWES",
-      disposition: "Meeting scheduled; documentation under coordinator review.",
-    },
-    {
-      crNumber: "CR-2026-017",
-      title: "Add emergency override approval path",
-      status: "Ready for Review",
-      priority: "Critical",
-      risk: "High",
-      category: "Compliance",
-      owner: "Marcus Lee",
-      requester: "Regulatory Affairs",
-      system: "Change Governance",
-      targetDate: dateFromToday(5),
-      submittedDate: dateFromToday(-3),
-      description:
-        "Create a controlled approval path for urgent field changes when the normal review board is not available.",
-      businessImpact:
-        "Keeps critical work moving while preserving audit evidence for post-incident review.",
-      technicalNotes:
-        "Requires clear audit fields, approver identity capture, and an after-action review task.",
-      tags: ["approval", "audit", "urgent"],
-      eccBoard: "EC&A",
-      classification: "Class I",
-      currentGate: "G1",
-      meetingDate: dateFromToday(5),
-      documentationDeadline: dateFromToday(3),
-      crFolderPath: "CR-2026-017 - EC&A - Change Governance",
-      wbsChargeNumber: "WBS-017",
-      chargeNumberActive: true,
-      quorum: ["ECC Chair", "Contracts", "Program Chief", "Value Stream Leader"],
-      documentationNotificationStatus: "Complete",
-      preMeetingReviewStatus: "Complete",
-      meetingAttendanceStatus: "Not Started",
-      postMeetingPdfStatus: "Not Started",
-      ncdocStatus: "Not Started",
-      xclassStatus: "Not Started",
-      oocApprovalStatus: "Not Started",
-      chairApprovalStatus: "Not Started",
-      closureNotificationStatus: "Not Started",
-      cmWorkingListStatus: "Not Started",
-      waiverOption: null,
-      designAuthority: "LHSWLGEAI",
-      disposition: "Ready for Gate 1 review.",
-    },
-    {
-      crNumber: "CR-2026-021",
-      title: "Revise transformer replacement schedule logic",
-      status: "Held for Actions",
-      priority: "High",
-      risk: "High",
-      category: "Scheduling",
-      owner: "Avery Chen",
-      requester: "Asset Planning",
-      system: "Work Planner",
-      targetDate: dateFromToday(2),
-      submittedDate: dateFromToday(-11),
-      description:
-        "Adjust schedule rules so transformer replacements consider crew certification, outage windows, and procurement lead time.",
-      businessImpact:
-        "Prevents schedule churn and reduces the risk of crew assignments that cannot be executed.",
-      technicalNotes:
-        "Blocked until procurement confirms the latest material lead-time feed format.",
-      tags: ["planning", "procurement", "blocked"],
-      eccBoard: "PWES Military",
-      classification: "Class I",
-      currentGate: "G3",
-      meetingDate: dateFromToday(-2),
-      documentationDeadline: dateFromToday(-4),
-      crFolderPath: "CR-2026-021 - PWES Military - Work Planner",
-      wbsChargeNumber: "WBS-021",
-      chargeNumberActive: true,
-      quorum: ["ECC Chair", "Supply Chain", "Program Chief"],
-      documentationNotificationStatus: "Complete",
-      preMeetingReviewStatus: "Complete",
-      meetingAttendanceStatus: "Complete",
-      postMeetingPdfStatus: "Complete",
-      ncdocStatus: "In Progress",
-      xclassStatus: "Not Started",
-      oocApprovalStatus: "Blocked",
-      chairApprovalStatus: "Not Started",
-      closureNotificationStatus: "Not Started",
-      cmWorkingListStatus: "Not Started",
-      waiverOption: null,
-      designAuthority: "LHSWLKEECS",
-      disposition: "Held for actions; procurement evidence required before OOC approvals.",
-    },
-    {
-      crNumber: "CR-2026-025",
-      title: "Expose CR health rollup for weekly review",
-      status: "Pending OOC Approvals",
-      priority: "Medium",
-      risk: "Low",
-      category: "Reporting",
-      owner: "Sofia Romero",
-      requester: "PMO",
-      system: "Leadership Dashboard",
-      targetDate: dateFromToday(18),
-      submittedDate: dateFromToday(-14),
-      description:
-        "Add a weekly rollup of open CRs by status, owner, due date, and risk rating.",
-      businessImpact:
-        "Gives project leads a fast way to spot aging requests and unblock owners.",
-      technicalNotes:
-        "Current export works; validating date grouping and status labels.",
-      tags: ["reporting", "pmo"],
-      eccBoard: "P&C",
-      classification: "Class II",
-      currentGate: "P&C",
-      meetingDate: dateFromToday(-1),
-      documentationDeadline: dateFromToday(-3),
-      crFolderPath: "CR-2026-025 - P&C - Leadership Dashboard",
-      wbsChargeNumber: "WBS-025",
-      chargeNumberActive: true,
-      quorum: ["ECC Chair", "PMO", "Program Chief"],
-      documentationNotificationStatus: "Complete",
-      preMeetingReviewStatus: "Complete",
-      meetingAttendanceStatus: "Complete",
-      postMeetingPdfStatus: "Complete",
-      ncdocStatus: "Complete",
-      xclassStatus: "In Progress",
-      oocApprovalStatus: "In Progress",
-      chairApprovalStatus: "Not Started",
-      closureNotificationStatus: "Not Started",
-      cmWorkingListStatus: "Not Applicable",
-      waiverOption: null,
-      designAuthority: "LHSRKEPS",
-      disposition: "Pending OOC approvals and xClass completion.",
-    },
-  ];
 }
