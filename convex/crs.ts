@@ -1,12 +1,13 @@
 import { v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import { MutationCtx, mutation, query } from "./_generated/server";
+import { MutationCtx, QueryCtx, mutation, query } from "./_generated/server";
 
 const crStatus = v.union(
   v.literal("Intake"),
   v.literal("Documentation Pending"),
   v.literal("Ready for Review"),
   v.literal("Meeting Scheduled"),
+  v.literal("Testing"),
   v.literal("Review"),
   v.literal("Approved"),
   v.literal("Approved w/Actions"),
@@ -97,6 +98,7 @@ const statusFilter = v.union(
   v.literal("Documentation Pending"),
   v.literal("Ready for Review"),
   v.literal("Meeting Scheduled"),
+  v.literal("Testing"),
   v.literal("Review"),
   v.literal("Approved"),
   v.literal("Approved w/Actions"),
@@ -132,6 +134,14 @@ type CrPatch = Partial<{
   classification: Doc<"crs">["classification"];
   currentGate: Doc<"crs">["currentGate"];
   meetingDate: string | null;
+  meetingTimeEst: string;
+  ncdocNumber: string;
+  classGateMilitarySupplierEc: string;
+  responsibleIpts: string[];
+  enginePrograms: string[];
+  componentModels: string[];
+  supplier: string;
+  far15: boolean;
   documentationDeadline: string | null;
   crFolderPath: string;
   wbsChargeNumber: string;
@@ -150,13 +160,54 @@ type CrPatch = Partial<{
   waiverOption: string | null;
   designAuthority: string;
   disposition: string;
+  eccCoordinator: string;
   isArchived: boolean;
   lastUpdatedAt: number;
 }>;
 
+type AuthIdentity = NonNullable<
+  Awaited<ReturnType<QueryCtx["auth"]["getUserIdentity"]>>
+>;
+
+async function requireAuthenticated(
+  ctx: Pick<QueryCtx | MutationCtx, "auth">,
+): Promise<AuthIdentity> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Not authenticated");
+  }
+  return identity;
+}
+
+function identityDisplayName(identity: AuthIdentity) {
+  return cleanText(
+    identity.name ?? identity.email ?? "Collins user",
+    "Collins user",
+  );
+}
+
+function cleanCrNumber(value: string) {
+  const normalized = normalizeCrNumber(value);
+  if (!/^CR-\d{7}$/.test(normalized)) {
+    throw new Error("CR number must use the format CR-0222162.");
+  }
+  return normalized;
+}
+
+function normalizeCrNumber(value: string) {
+  const normalized = value.trim().toUpperCase();
+  const digitsOnly = normalized.match(/^CR[-\s_]*(\d{1,7})$/);
+  if (digitsOnly) {
+    return `CR-${digitsOnly[1].padStart(7, "0")}`;
+  }
+  return normalized;
+}
+
 export const list = query({
   args: { status: statusFilter },
   handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
     if (args.status !== "All") {
       const status = args.status as Doc<"crs">["status"];
       return await ctx.db
@@ -176,9 +227,68 @@ export const list = query({
   },
 });
 
+export const listWhiteboardPositions = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await requireAuthenticated(ctx);
+
+    const positions = await ctx.db
+      .query("crWhiteboardPositions")
+      .withIndex("by_userKey", (q) =>
+        q.eq("userKey", identity.tokenIdentifier),
+      )
+      .take(500);
+
+    return positions.map((position) => ({
+      crId: position.crId,
+      x: position.x,
+      y: position.y,
+      updatedAt: position.updatedAt,
+    }));
+  },
+});
+
+export const updateWhiteboardPosition = mutation({
+  args: {
+    crId: v.id("crs"),
+    x: v.number(),
+    y: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireAuthenticated(ctx);
+    await requireCr(ctx, args.crId);
+
+    const now = Date.now();
+    const x = cleanWhiteboardCoordinate(args.x);
+    const y = cleanWhiteboardCoordinate(args.y);
+    const existing = await ctx.db
+      .query("crWhiteboardPositions")
+      .withIndex("by_userKey_and_crId", (q) =>
+        q.eq("userKey", identity.tokenIdentifier).eq("crId", args.crId),
+      )
+      .unique();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, { x, y, updatedAt: now });
+    } else {
+      await ctx.db.insert("crWhiteboardPositions", {
+        crId: args.crId,
+        userKey: identity.tokenIdentifier,
+        x,
+        y,
+        updatedAt: now,
+      });
+    }
+
+    return { crId: args.crId, x, y };
+  },
+});
+
 export const listUpdates = query({
   args: { crId: v.id("crs") },
   handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
     return await ctx.db
       .query("crUpdates")
       .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.crId))
@@ -208,6 +318,14 @@ export const create = mutation({
     classification: crClassification,
     currentGate: reviewGate,
     meetingDate: v.union(v.string(), v.null()),
+    meetingTimeEst: v.string(),
+    ncdocNumber: v.string(),
+    classGateMilitarySupplierEc: v.string(),
+    responsibleIpts: v.array(v.string()),
+    enginePrograms: v.array(v.string()),
+    componentModels: v.array(v.string()),
+    supplier: v.string(),
+    far15: v.boolean(),
     documentationDeadline: v.union(v.string(), v.null()),
     crFolderPath: v.string(),
     wbsChargeNumber: v.string(),
@@ -226,10 +344,12 @@ export const create = mutation({
     waiverOption: v.union(v.string(), v.null()),
     designAuthority: v.string(),
     disposition: v.string(),
+    eccCoordinator: v.string(),
     author: v.string(),
   },
   handler: async (ctx, args) => {
-    const crNumber = args.crNumber.trim();
+    const author = identityDisplayName(await requireAuthenticated(ctx));
+    const crNumber = cleanCrNumber(args.crNumber);
     const title = args.title.trim();
 
     if (!crNumber || !title) {
@@ -266,6 +386,14 @@ export const create = mutation({
       classification: args.classification,
       currentGate: args.currentGate,
       meetingDate: cleanDate(args.meetingDate),
+      meetingTimeEst: cleanText(args.meetingTimeEst, ""),
+      ncdocNumber: cleanText(args.ncdocNumber, ""),
+      classGateMilitarySupplierEc: cleanText(args.classGateMilitarySupplierEc, ""),
+      responsibleIpts: cleanList(args.responsibleIpts),
+      enginePrograms: cleanList(args.enginePrograms),
+      componentModels: cleanList(args.componentModels),
+      supplier: cleanText(args.supplier, ""),
+      far15: args.far15,
       documentationDeadline: cleanDate(args.documentationDeadline),
       crFolderPath: cleanText(args.crFolderPath, ""),
       wbsChargeNumber: cleanText(args.wbsChargeNumber, ""),
@@ -284,13 +412,14 @@ export const create = mutation({
       waiverOption: cleanNullableText(args.waiverOption),
       designAuthority: cleanText(args.designAuthority, ""),
       disposition: cleanText(args.disposition, "Documentation pending"),
+      eccCoordinator: cleanText(args.eccCoordinator, ""),
       isArchived: false,
       lastUpdatedAt: now,
     });
 
     await ctx.db.insert("crUpdates", {
       crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: "CR created.",
       kind: "created",
       createdAt: now,
@@ -322,6 +451,14 @@ export const update = mutation({
     classification: v.optional(crClassification),
     currentGate: v.optional(reviewGate),
     meetingDate: v.optional(v.union(v.string(), v.null())),
+    meetingTimeEst: v.optional(v.string()),
+    ncdocNumber: v.optional(v.string()),
+    classGateMilitarySupplierEc: v.optional(v.string()),
+    responsibleIpts: v.optional(v.array(v.string())),
+    enginePrograms: v.optional(v.array(v.string())),
+    componentModels: v.optional(v.array(v.string())),
+    supplier: v.optional(v.string()),
+    far15: v.optional(v.boolean()),
     documentationDeadline: v.optional(v.union(v.string(), v.null())),
     crFolderPath: v.optional(v.string()),
     wbsChargeNumber: v.optional(v.string()),
@@ -340,18 +477,17 @@ export const update = mutation({
     waiverOption: v.optional(v.union(v.string(), v.null())),
     designAuthority: v.optional(v.string()),
     disposition: v.optional(v.string()),
+    eccCoordinator: v.optional(v.string()),
     author: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     const existing = await requireCr(ctx, args.id);
     const now = Date.now();
     const patch: CrPatch = { lastUpdatedAt: now };
 
     if (args.crNumber !== undefined) {
-      const crNumber = args.crNumber.trim();
-      if (!crNumber) {
-        throw new Error("CR number is required.");
-      }
+      const crNumber = cleanCrNumber(args.crNumber);
       if (crNumber !== existing.crNumber) {
         const duplicate = await ctx.db
           .query("crs")
@@ -418,6 +554,33 @@ export const update = mutation({
     if (args.meetingDate !== undefined) {
       patch.meetingDate = cleanDate(args.meetingDate);
     }
+    if (args.meetingTimeEst !== undefined) {
+      patch.meetingTimeEst = cleanText(args.meetingTimeEst, "");
+    }
+    if (args.ncdocNumber !== undefined) {
+      patch.ncdocNumber = cleanText(args.ncdocNumber, "");
+    }
+    if (args.classGateMilitarySupplierEc !== undefined) {
+      patch.classGateMilitarySupplierEc = cleanText(
+        args.classGateMilitarySupplierEc,
+        "",
+      );
+    }
+    if (args.responsibleIpts !== undefined) {
+      patch.responsibleIpts = cleanList(args.responsibleIpts);
+    }
+    if (args.enginePrograms !== undefined) {
+      patch.enginePrograms = cleanList(args.enginePrograms);
+    }
+    if (args.componentModels !== undefined) {
+      patch.componentModels = cleanList(args.componentModels);
+    }
+    if (args.supplier !== undefined) {
+      patch.supplier = cleanText(args.supplier, "");
+    }
+    if (args.far15 !== undefined) {
+      patch.far15 = args.far15;
+    }
     if (args.documentationDeadline !== undefined) {
       patch.documentationDeadline = cleanDate(args.documentationDeadline);
     }
@@ -472,13 +635,16 @@ export const update = mutation({
     if (args.disposition !== undefined) {
       patch.disposition = cleanText(args.disposition, "");
     }
+    if (args.eccCoordinator !== undefined) {
+      patch.eccCoordinator = cleanText(args.eccCoordinator, "");
+    }
 
     await ctx.db.patch(args.id, patch);
 
     if (args.status !== undefined && args.status !== existing.status) {
       await ctx.db.insert("crUpdates", {
         crId: args.id,
-        author: cleanText(args.author, "Local user"),
+        author,
         body: `Status changed from ${existing.status} to ${args.status}.`,
         kind: "status",
         createdAt: now,
@@ -486,7 +652,7 @@ export const update = mutation({
     } else {
       await ctx.db.insert("crUpdates", {
         crId: args.id,
-        author: cleanText(args.author, "Local user"),
+        author,
         body: "CR details updated.",
         kind: "edited",
         createdAt: now,
@@ -497,6 +663,170 @@ export const update = mutation({
   },
 });
 
+export const upsertFromAssistant = mutation({
+  args: {
+    crNumber: v.string(),
+    sourceText: v.string(),
+    title: v.optional(v.string()),
+    status: v.optional(crStatus),
+    eccScope: v.optional(v.string()),
+    previousWork: v.optional(v.string()),
+    disposition: v.optional(v.string()),
+    oocApprovalStatus: v.optional(taskState),
+    closureNotificationStatus: v.optional(taskState),
+    author: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
+    const crNumber = cleanCrNumber(args.crNumber);
+    const now = Date.now();
+    const eccScope = cleanOptionalText(args.eccScope);
+    const previousWork = cleanOptionalText(args.previousWork);
+    const sourceText = truncateText(
+      cleanText(args.sourceText, "Collins AI workflow update."),
+      1000,
+    );
+    const disposition =
+      cleanOptionalText(args.disposition) ??
+      buildAssistantDisposition(args.status, eccScope);
+
+    const existing = await ctx.db
+      .query("crs")
+      .withIndex("by_crNumber", (q) => q.eq("crNumber", crNumber))
+      .unique();
+
+    if (existing) {
+      const patch: CrPatch = { lastUpdatedAt: now };
+
+      if (args.status !== undefined) {
+        patch.status = args.status;
+      }
+      if (eccScope) {
+        patch.category = eccScope;
+        patch.system = eccScope;
+        patch.classGateMilitarySupplierEc = eccScope;
+        patch.eccBoard = inferEccBoard(eccScope);
+      }
+      if (args.oocApprovalStatus !== undefined) {
+        patch.oocApprovalStatus = args.oocApprovalStatus;
+      }
+      if (args.closureNotificationStatus !== undefined) {
+        patch.closureNotificationStatus = args.closureNotificationStatus;
+      }
+      if (disposition) {
+        patch.disposition = disposition;
+      }
+      patch.technicalNotes = mergeAssistantTechnicalNotes(
+        existing.technicalNotes,
+        previousWork,
+      );
+      patch.tags = mergeTags(
+        existing.tags,
+        assistantWorkflowTags(args.status, eccScope, previousWork),
+      );
+
+      await ctx.db.patch(existing._id, patch);
+      await ctx.db.insert("crUpdates", {
+        crId: existing._id,
+        author,
+        body: buildAssistantUpdateBody("updated", {
+          status: args.status,
+          eccScope,
+          previousWork,
+          sourceText,
+        }),
+        kind:
+          args.status !== undefined && args.status !== existing.status
+            ? "status"
+            : "edited",
+        createdAt: now,
+      });
+
+      return {
+        crId: existing._id,
+        crNumber,
+        operation: "updated",
+        status: args.status ?? existing.status,
+      };
+    }
+
+    const title = cleanText(
+      args.title ?? "",
+      buildAssistantTitle(crNumber, args.status, eccScope),
+    );
+    const status = args.status ?? "Intake";
+    const crId = await ctx.db.insert("crs", {
+      crNumber,
+      title,
+      status,
+      priority: "Medium",
+      risk: "Low",
+      category: cleanText(eccScope ?? "", "PWES Military ECC"),
+      owner: "Unassigned",
+      requester: "Unknown",
+      system: cleanText(eccScope ?? "", "PWES Military ECC"),
+      targetDate: null,
+      submittedDate: todayIso(),
+      description: sourceText,
+      businessImpact: "Not specified.",
+      technicalNotes: previousWork
+        ? `Previous work: ${previousWork}.`
+        : "Created from Collins AI paste.",
+      tags: cleanTags(assistantWorkflowTags(status, eccScope, previousWork)),
+      eccBoard: inferEccBoard(eccScope ?? ""),
+      classification: "TBD",
+      currentGate: "None",
+      meetingDate: null,
+      meetingTimeEst: "",
+      ncdocNumber: "",
+      classGateMilitarySupplierEc: eccScope ?? "",
+      responsibleIpts: [],
+      enginePrograms: [],
+      componentModels: [],
+      supplier: "",
+      far15: false,
+      documentationDeadline: null,
+      crFolderPath: "",
+      wbsChargeNumber: "",
+      chargeNumberActive: false,
+      quorum: [],
+      documentationNotificationStatus: "Not Started",
+      preMeetingReviewStatus: "Not Started",
+      meetingAttendanceStatus: "Not Started",
+      postMeetingPdfStatus: "Not Started",
+      ncdocStatus: "Not Started",
+      xclassStatus: "Not Started",
+      oocApprovalStatus: args.oocApprovalStatus ?? "Not Started",
+      chairApprovalStatus: "Not Started",
+      closureNotificationStatus:
+        args.closureNotificationStatus ??
+        (status === "Closed" ? "In Progress" : "Not Started"),
+      cmWorkingListStatus: "Not Started",
+      waiverOption: null,
+      designAuthority: "",
+      disposition,
+      eccCoordinator: "",
+      isArchived: false,
+      lastUpdatedAt: now,
+    });
+
+    await ctx.db.insert("crUpdates", {
+      crId,
+      author,
+      body: buildAssistantUpdateBody("created", {
+        status,
+        eccScope,
+        previousWork,
+        sourceText,
+      }),
+      kind: "created",
+      createdAt: now,
+    });
+
+    return { crId, crNumber, operation: "created", status };
+  },
+});
+
 export const addUpdate = mutation({
   args: {
     crId: v.id("crs"),
@@ -504,6 +834,7 @@ export const addUpdate = mutation({
     body: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     await requireCr(ctx, args.crId);
     const body = args.body.trim();
     if (!body) {
@@ -512,7 +843,7 @@ export const addUpdate = mutation({
     const now = Date.now();
     await ctx.db.insert("crUpdates", {
       crId: args.crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body,
       kind: "note",
       createdAt: now,
@@ -525,12 +856,13 @@ export const addUpdate = mutation({
 export const archive = mutation({
   args: { id: v.id("crs"), author: v.string() },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     await requireCr(ctx, args.id);
     const now = Date.now();
     await ctx.db.patch(args.id, { isArchived: true, lastUpdatedAt: now });
     await ctx.db.insert("crUpdates", {
       crId: args.id,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: "CR archived.",
       kind: "edited",
       createdAt: now,
@@ -542,6 +874,8 @@ export const archive = mutation({
 export const listActions = query({
   args: { crId: v.id("crs") },
   handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
     return await ctx.db
       .query("crActions")
       .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.crId))
@@ -561,6 +895,7 @@ export const addAction = mutation({
     author: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     await requireCr(ctx, args.crId);
     const body = args.body.trim();
     if (!body) {
@@ -585,7 +920,7 @@ export const addAction = mutation({
     });
     await ctx.db.insert("crUpdates", {
       crId: args.crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: `Action opened: ${body}`,
       kind: "edited",
       createdAt: now,
@@ -602,6 +937,7 @@ export const updateActionStatus = mutation({
     author: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     const action = await ctx.db.get(args.id);
     if (!action) {
       throw new Error("Action not found.");
@@ -619,7 +955,7 @@ export const updateActionStatus = mutation({
     await ctx.db.patch(action.crId, { lastUpdatedAt: now });
     await ctx.db.insert("crUpdates", {
       crId: action.crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: `Action marked ${args.status}: ${action.body}`,
       kind: "edited",
       createdAt: now,
@@ -631,6 +967,8 @@ export const updateActionStatus = mutation({
 export const listApprovals = query({
   args: { crId: v.id("crs") },
   handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
     return await ctx.db
       .query("crApprovals")
       .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.crId))
@@ -650,6 +988,7 @@ export const addApproval = mutation({
     author: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     await requireCr(ctx, args.crId);
     const approverName = args.approverName.trim();
     if (!approverName) {
@@ -676,7 +1015,7 @@ export const addApproval = mutation({
     });
     await ctx.db.insert("crUpdates", {
       crId: args.crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: `Approval needed from ${approverName}.`,
       kind: "edited",
       createdAt: now,
@@ -693,6 +1032,7 @@ export const updateApprovalStatus = mutation({
     author: v.string(),
   },
   handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
     const approval = await ctx.db.get(args.id);
     if (!approval) {
       throw new Error("Approval not found.");
@@ -711,7 +1051,7 @@ export const updateApprovalStatus = mutation({
     await ctx.db.patch(approval.crId, { lastUpdatedAt: now });
     await ctx.db.insert("crUpdates", {
       crId: approval.crId,
-      author: cleanText(args.author, "Local user"),
+      author,
       body: `${approval.approverName} approval marked ${args.status}.`,
       kind: "edited",
       createdAt: now,
@@ -723,6 +1063,8 @@ export const updateApprovalStatus = mutation({
 export const assistantContext = query({
   args: { limit: v.number() },
   handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
     const limit = Math.min(Math.max(Math.floor(args.limit), 1), 120);
     const crs = await ctx.db
       .query("crs")
@@ -768,6 +1110,14 @@ export const assistantContext = query({
         classification: cr.classification ?? "TBD",
         currentGate: cr.currentGate ?? "None",
         meetingDate: cr.meetingDate ?? null,
+        meetingTimeEst: cr.meetingTimeEst ?? "",
+        ncdocNumber: cr.ncdocNumber ?? "",
+        classGateMilitarySupplierEc: cr.classGateMilitarySupplierEc ?? "",
+        responsibleIpts: cr.responsibleIpts ?? [],
+        enginePrograms: cr.enginePrograms ?? [],
+        componentModels: cr.componentModels ?? [],
+        supplier: cr.supplier ?? "",
+        far15: cr.far15 ?? false,
         documentationDeadline: cr.documentationDeadline ?? null,
         crFolderPath: cr.crFolderPath ?? "",
         wbsChargeNumber: cr.wbsChargeNumber ?? "",
@@ -787,6 +1137,7 @@ export const assistantContext = query({
         waiverOption: cr.waiverOption ?? null,
         designAuthority: cr.designAuthority ?? "",
         disposition: cr.disposition ?? "",
+        eccCoordinator: cr.eccCoordinator ?? "",
         openActions: actions
           .filter((action) => action.status !== "Closed")
           .map((action) => ({
@@ -859,9 +1210,26 @@ function cleanTags(tags: string[]) {
       tags
         .map((tag) => tag.trim())
         .filter((tag) => tag.length > 0)
-        .slice(0, 12),
+      .slice(0, 12),
     ),
   );
+}
+
+function mergeTags(existing: string[], incoming: string[]) {
+  return cleanTags([...existing, ...incoming]);
+}
+
+function assistantWorkflowTags(
+  status: Doc<"crs">["status"] | undefined,
+  eccScope: string | null,
+  previousWork: string | null,
+) {
+  return [
+    eccScope ?? "",
+    status === "Closed" ? "Closure" : "",
+    previousWork?.toLowerCase().includes("ooc") ? "OOC" : "",
+    "Collins AI",
+  ];
 }
 
 function cleanList(items: string[]) {
@@ -873,6 +1241,114 @@ function cleanList(items: string[]) {
         .slice(0, 30),
     ),
   );
+}
+
+function cleanOptionalText(value: string | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return trimmed || null;
+}
+
+function cleanWhiteboardCoordinate(value: number) {
+  if (!Number.isFinite(value)) {
+    throw new Error("Whiteboard position must be a finite number.");
+  }
+  return Math.max(0, Math.min(5_000, Math.round(value)));
+}
+
+function truncateText(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function inferEccBoard(scope: string): Doc<"crs">["eccBoard"] {
+  if (/\b(?:ms|military|pwes)\b/i.test(scope)) {
+    return "PWES Military";
+  }
+  if (/\bcommercial\b/i.test(scope)) {
+    return "PWES Commercial";
+  }
+  if (/\bec\s*&\s*a\b|\bec&a\b/i.test(scope)) {
+    return "EC&A";
+  }
+  if (/\bp\s*&\s*c\b|\bp&c\b/i.test(scope)) {
+    return "P&C";
+  }
+  return "Other";
+}
+
+function buildAssistantTitle(
+  crNumber: string,
+  status: Doc<"crs">["status"] | undefined,
+  eccScope: string | null,
+) {
+  const scope = eccScope ? `${eccScope} ` : "";
+  if (status === "Closed") {
+    return `${crNumber} - ${scope}closure`;
+  }
+  return `${crNumber} - ${scope}workflow update`;
+}
+
+function buildAssistantDisposition(
+  status: Doc<"crs">["status"] | undefined,
+  eccScope: string | null,
+) {
+  const scope = eccScope ? ` for ${eccScope}` : "";
+  if (status === "Closed") {
+    return `Pushed to closure${scope}`;
+  }
+  if (status === "Pending OOC Approvals") {
+    return `Pending OOC approvals${scope}`;
+  }
+  return "Created from Collins AI paste";
+}
+
+function mergeAssistantTechnicalNotes(
+  existingNotes: string,
+  previousWork: string | null,
+) {
+  if (!previousWork) {
+    return existingNotes;
+  }
+
+  const note = `Previous work: ${previousWork}.`;
+  if (existingNotes.toLowerCase().includes(note.toLowerCase())) {
+    return existingNotes;
+  }
+  if (!existingNotes.trim() || existingNotes === "Not specified.") {
+    return note;
+  }
+  return truncateText(`${existingNotes.trim()}\n${note}`, 2000);
+}
+
+function buildAssistantUpdateBody(
+  operation: "created" | "updated",
+  details: {
+    status: Doc<"crs">["status"] | undefined;
+    eccScope: string | null;
+    previousWork: string | null;
+    sourceText: string;
+  },
+) {
+  const parts = [
+    operation === "created"
+      ? "CR created from Collins AI paste."
+      : "Collins AI workflow update.",
+  ];
+
+  if (details.status) {
+    parts.push(`Status set to ${details.status}.`);
+  }
+  if (details.eccScope) {
+    parts.push(`Scope: ${details.eccScope}.`);
+  }
+  if (details.previousWork) {
+    parts.push(`Previous work: ${details.previousWork}.`);
+  }
+  parts.push(`Paste: ${details.sourceText}`);
+
+  return truncateText(parts.join(" "), 1200);
 }
 
 function todayIso() {

@@ -15,10 +15,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Local CR Tracker",
-  description: "A local change request tracker powered by Next.js, Convex, and Qwen.",
+  title: "Collins Aerospace ECC Dashboard",
+  description:
+    "A polished Collins Aerospace dashboard for Engineering Change Council change requests, gates, approvals, and risk.",
   icons: {
-    icon: "/convex.svg",
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: "/favicon.svg",
   },
 };
 

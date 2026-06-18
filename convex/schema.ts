@@ -6,6 +6,7 @@ const crStatus = v.union(
   v.literal("Documentation Pending"),
   v.literal("Ready for Review"),
   v.literal("Meeting Scheduled"),
+  v.literal("Testing"),
   v.literal("Review"),
   v.literal("Approved"),
   v.literal("Approved w/Actions"),
@@ -111,6 +112,14 @@ export default defineSchema({
     classification: v.optional(crClassification),
     currentGate: v.optional(reviewGate),
     meetingDate: v.optional(v.union(v.string(), v.null())),
+    meetingTimeEst: v.optional(v.string()),
+    ncdocNumber: v.optional(v.string()),
+    classGateMilitarySupplierEc: v.optional(v.string()),
+    responsibleIpts: v.optional(v.array(v.string())),
+    enginePrograms: v.optional(v.array(v.string())),
+    componentModels: v.optional(v.array(v.string())),
+    supplier: v.optional(v.string()),
+    far15: v.optional(v.boolean()),
     documentationDeadline: v.optional(v.union(v.string(), v.null())),
     crFolderPath: v.optional(v.string()),
     wbsChargeNumber: v.optional(v.string()),
@@ -129,6 +138,7 @@ export default defineSchema({
     waiverOption: v.optional(v.union(v.string(), v.null())),
     designAuthority: v.optional(v.string()),
     disposition: v.optional(v.string()),
+    eccCoordinator: v.optional(v.string()),
     isArchived: v.boolean(),
     lastUpdatedAt: v.number(),
   })
@@ -178,4 +188,13 @@ export default defineSchema({
   })
     .index("by_crId_and_createdAt", ["crId", "createdAt"])
     .index("by_crId_and_status", ["crId", "status"]),
+  crWhiteboardPositions: defineTable({
+    crId: v.id("crs"),
+    userKey: v.string(),
+    x: v.number(),
+    y: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_userKey", ["userKey"])
+    .index("by_userKey_and_crId", ["userKey", "crId"]),
 });
