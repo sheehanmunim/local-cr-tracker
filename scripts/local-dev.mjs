@@ -1,13 +1,33 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const setupOnly = process.argv.includes("--setup-only");
-const model = process.env.OLLAMA_MODEL || "qwen3:latest";
+const modelsOnly = process.argv.includes("--models-only");
+const modelConfig = readModelConfig();
+const systemMemoryGb = os.totalmem() / 1024 ** 3;
+const modelProfileName = selectModelProfileName();
+const modelProfile = modelConfig.profiles[modelProfileName];
+let model = process.env.OLLAMA_MODEL || modelProfile.chat;
+let voiceModel = process.env.OLLAMA_VOICE_MODEL || modelProfile.voice;
+let visionModel = process.env.OLLAMA_VISION_MODEL || modelProfile.vision;
+const explicitModel = Boolean(
+  process.env.OLLAMA_MODEL && process.env.OLLAMA_MODEL !== modelProfile.chat,
+);
+const explicitVoiceModel = Boolean(
+  process.env.OLLAMA_VOICE_MODEL &&
+    process.env.OLLAMA_VOICE_MODEL !== modelProfile.voice,
+);
+const explicitVisionModel = Boolean(
+  process.env.OLLAMA_VISION_MODEL &&
+    process.env.OLLAMA_VISION_MODEL !== modelProfile.vision,
+);
 const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434";
 const npmCommand = process.env.npm_execpath
   ? process.execPath
@@ -31,10 +51,39 @@ async function main() {
     "Ollama. Install it from https://ollama.com/download, then rerun this command.",
   );
 
-  run("Installing project dependencies", npmCommand, [...npmArgsPrefix, "install"]);
+  if (!modelsOnly) {
+    run("Installing project dependencies", npmCommand, [...npmArgsPrefix, "install"]);
+  }
 
   await ensureOllamaServer();
-  await ensureOllamaModel(model);
+  model = await resolveAdaptiveOllamaModel({
+    role: "chat",
+    label: "text chat",
+    requestedName: model,
+    fallbackNames: modelConfig.fallbacks.chat,
+    explicit: explicitModel,
+  });
+  voiceModel = await resolveAdaptiveOllamaModel({
+    role: "voice",
+    label: "voice chat",
+    requestedName: voiceModel,
+    fallbackNames: modelConfig.fallbacks.voice,
+    explicit: explicitVoiceModel,
+  });
+  visionModel = await resolveAdaptiveOllamaModel({
+    role: "vision",
+    label: "screenshots",
+    requestedName: visionModel,
+    fallbackNames: modelConfig.fallbacks.vision,
+    explicit: explicitVisionModel,
+  });
+  persistResolvedModelEnv();
+  printResolvedModels();
+
+  if (modelsOnly) {
+    console.log("\nLocal models are ready.");
+    return;
+  }
 
   if (setupOnly) {
     console.log("\nSetup complete. Run `npm run local` to start the tracker.");
@@ -49,7 +98,10 @@ async function main() {
     env: {
       ...process.env,
       OLLAMA_MODEL: model,
+      OLLAMA_VOICE_MODEL: voiceModel,
+      OLLAMA_VISION_MODEL: visionModel,
       OLLAMA_BASE_URL: ollamaBaseUrl,
+      LOCAL_MODEL_PROFILE: modelProfileName,
     },
     stdio: "inherit",
   });
@@ -77,7 +129,21 @@ function printHeader() {
   console.log("================");
   console.log(`Workspace: ${root}`);
   console.log(`Ollama: ${ollamaBaseUrl}`);
-  console.log(`Model: ${model}\n`);
+  console.log(`System memory: ${systemMemoryGb.toFixed(1)} GB`);
+  console.log(
+    `Model profile: ${modelProfileName}${process.env.LOCAL_MODEL_PROFILE ? " (configured)" : " (auto)"}`,
+  );
+  console.log(`Seed text model: ${model}`);
+  console.log(`Seed voice model: ${voiceModel}`);
+  console.log(`Seed vision model: ${visionModel}\n`);
+}
+
+function printResolvedModels() {
+  console.log("\nResolved local models:");
+  console.log(`- Text: ${model}`);
+  console.log(`- Voice: ${voiceModel}`);
+  console.log(`- Screenshots: ${visionModel}`);
+  console.log("- Saved model choices to .env.local");
 }
 
 function requireCommand(command, args, label) {
@@ -135,15 +201,117 @@ async function ensureOllamaServer() {
   );
 }
 
+async function resolveAdaptiveOllamaModel({
+  role,
+  label,
+  requestedName,
+  fallbackNames,
+  explicit,
+}) {
+  if (explicit) {
+    if (await ensureOllamaModel(requestedName)) {
+      return requestedName;
+    }
+
+    throw new Error(
+      `Could not install explicitly configured ${label} model ${requestedName}.`,
+    );
+  }
+
+  const installedModels = await getOllamaModels();
+  const rankedCandidates = rankModelCandidates(role, installedModels);
+  const candidates = unique([...rankedCandidates, requestedName, ...fallbackNames]);
+  console.log(
+    `Adaptive ${label} candidates: ${previewCandidateList(candidates)}.`,
+  );
+
+  const firstCandidate = candidates[0] ?? requestedName;
+  for (const candidate of candidates) {
+    if (candidate !== firstCandidate) {
+      console.warn(
+        `Trying ${candidate} for ${label} because ${firstCandidate} was not available.`,
+      );
+    }
+    if (await ensureOllamaModel(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Could not install any local ${label} model.`);
+}
+
+function rankModelCandidates(role, installedModels) {
+  const candidates = Array.isArray(modelConfig.candidates?.[role])
+    ? modelConfig.candidates[role]
+    : [];
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const compatibleCandidates = candidates.filter((candidate) =>
+    isCandidateCompatible(candidate),
+  );
+  const pool = compatibleCandidates.length > 0 ? compatibleCandidates : candidates;
+  const weights = normalizeWeights(modelConfig.weights?.[modelProfileName]?.[role]);
+  const installedSet = new Set(installedModels);
+  const installedBonus = Number(modelConfig.installedBonus?.[modelProfileName] ?? 0);
+
+  return pool
+    .map((candidate) => ({
+      name: candidate.name,
+      score: scoreModelCandidate(candidate, weights, installedSet, installedBonus),
+    }))
+    .filter((candidate) => typeof candidate.name === "string" && candidate.name)
+    .sort((left, right) => right.score - left.score)
+    .map((candidate) => candidate.name);
+}
+
+function scoreModelCandidate(candidate, weights, installedSet, installedBonus) {
+  const quality = Number(candidate.quality ?? 0);
+  const speed = Number(candidate.speed ?? 0);
+  const memoryPenalty =
+    typeof candidate.minRamGb === "number" && candidate.minRamGb > systemMemoryGb
+      ? (candidate.minRamGb - systemMemoryGb) * 0.3
+      : 0;
+  const cachedBonus = installedSet.has(candidate.name) ? installedBonus : 0;
+
+  return quality * weights.quality + speed * weights.speed + cachedBonus - memoryPenalty;
+}
+
+function isCandidateCompatible(candidate) {
+  return (
+    typeof candidate.minRamGb !== "number" || candidate.minRamGb <= systemMemoryGb
+  );
+}
+
+function normalizeWeights(weights) {
+  const quality = Number(weights?.quality ?? 0.5);
+  const speed = Number(weights?.speed ?? 0.5);
+  const total = quality + speed;
+  if (!Number.isFinite(total) || total <= 0) {
+    return { quality: 0.5, speed: 0.5 };
+  }
+
+  return {
+    quality: quality / total,
+    speed: speed / total,
+  };
+}
+
+function previewCandidateList(candidates) {
+  const preview = candidates.slice(0, 4).join(", ");
+  return candidates.length > 4 ? `${preview}, ...` : preview;
+}
+
 async function ensureOllamaModel(name) {
   const models = await getOllamaModels();
   if (models.includes(name)) {
     console.log(`Model ${name} is already installed.`);
-    return;
+    return true;
   }
 
   console.log(`Pulling ${name}. This can take a few minutes the first time...`);
-  run(`Pulling ${name}`, "ollama", ["pull", name]);
+  return runOptional(`Pulling ${name}`, "ollama", ["pull", name]);
 }
 
 async function canReachOllama() {
@@ -194,4 +362,100 @@ function requestJson(url) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runOptional(label, command, args) {
+  console.log(`${label}...`);
+  const result = spawnSync(command, args, {
+    cwd: root,
+    env: process.env,
+    stdio: "inherit",
+    shell: false,
+  });
+
+  if (result.status !== 0) {
+    console.warn(`${label} failed.`);
+    return false;
+  }
+
+  return true;
+}
+
+function readModelConfig() {
+  const configPath = path.join(root, "config", "local-models.json");
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Could not read local model config at ${configPath}: ${error.message}`,
+    );
+  }
+}
+
+function selectModelProfileName() {
+  const configuredProfile = process.env.LOCAL_MODEL_PROFILE?.trim();
+  const profileName =
+    configuredProfile && configuredProfile !== "auto"
+      ? configuredProfile
+      : chooseAutoModelProfileName();
+
+  if (!modelConfig.profiles[profileName]) {
+    throw new Error(
+      `Unknown LOCAL_MODEL_PROFILE=${profileName}. Use one of: ${Object.keys(
+        modelConfig.profiles,
+      ).join(", ")}.`,
+    );
+  }
+
+  return profileName;
+}
+
+function chooseAutoModelProfileName() {
+  if (systemMemoryGb >= 24) {
+    return "quality";
+  }
+  return systemMemoryGb >= 12 ? "balanced" : "fast";
+}
+
+function unique(values) {
+  return Array.from(
+    new Set(values.filter((value) => typeof value === "string" && value)),
+  );
+}
+
+function persistResolvedModelEnv() {
+  const envPath = path.join(root, ".env.local");
+  const nextValues = {
+    LOCAL_MODEL_PROFILE: modelProfileName,
+    OLLAMA_MODEL: model,
+    OLLAMA_VOICE_MODEL: voiceModel,
+    OLLAMA_VISION_MODEL: visionModel,
+    OLLAMA_BASE_URL: ollamaBaseUrl,
+    OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || "30m",
+  };
+  const existing = fs.existsSync(envPath)
+    ? fs.readFileSync(envPath, "utf8").split(/\r?\n/)
+    : [];
+  const seen = new Set();
+  const nextLines = existing.map((line) => {
+    const match = line.match(/^([A-Z0-9_]+)=/);
+    if (!match || !(match[1] in nextValues)) {
+      return line;
+    }
+
+    const key = match[1];
+    seen.add(key);
+    return `${key}=${nextValues[key]}`;
+  });
+
+  for (const [key, value] of Object.entries(nextValues)) {
+    if (!seen.has(key)) {
+      nextLines.push(`${key}=${value}`);
+    }
+  }
+
+  fs.writeFileSync(
+    envPath,
+    `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`,
+  );
 }

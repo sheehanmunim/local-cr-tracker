@@ -63,9 +63,9 @@ function Install-WithWinget {
 
 Write-Host "Local CR Tracker bootstrap"
 if ($SetupOnly) {
-  Write-Host "This will install missing local prerequisites and pull Qwen."
+  Write-Host "This will install missing local prerequisites and pull the selected local models."
 } else {
-  Write-Host "This will install missing local prerequisites, pull Qwen, and start the app."
+  Write-Host "This will install missing local prerequisites, pull the selected local models, and start the app."
 }
 
 Refresh-LocalPath

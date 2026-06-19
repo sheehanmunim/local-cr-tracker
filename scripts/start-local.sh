@@ -116,9 +116,9 @@ EOF
 
 echo "Local CR Tracker bootstrap"
 if [[ "$SETUP_ONLY" == "true" ]]; then
-  echo "This will install missing local prerequisites and pull Qwen."
+  echo "This will install missing local prerequisites and pull the selected local models."
 else
-  echo "This will install missing local prerequisites, pull Qwen, and start the app."
+  echo "This will install missing local prerequisites, pull the selected local models, and start the app."
 fi
 
 install_node

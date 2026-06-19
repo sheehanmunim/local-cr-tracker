@@ -8,6 +8,8 @@ import Image from "next/image";
 import {
   AlertTriangle,
   Archive,
+  ArrowUp,
+  AudioLines,
   BarChart3,
   CalendarClock,
   ChevronDown,
@@ -15,6 +17,7 @@ import {
   CircleDot,
   Download,
   FileSpreadsheet,
+  Focus,
   GitBranch,
   GripVertical,
   Kanban,
@@ -35,17 +38,15 @@ import {
   RefreshCw,
   Save,
   Search,
-  Send,
   Settings,
   SlidersHorizontal,
-  Square,
   StickyNote,
   Table2,
   Upload,
   UserRound,
-  Volume2,
-  VolumeX,
   X,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -53,9 +54,11 @@ import {
   ClipboardEvent,
   DragEvent,
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -102,9 +105,20 @@ type DashboardSection =
   | "analytics"
   | "settings";
 type SidebarNavSection = Exclude<DashboardSection, "settings">;
+type AssistantView = "closed" | "rail" | "full";
+type SidebarNavDropPosition = "before" | "after";
+type SidebarNavDropTarget = {
+  section: SidebarNavSection;
+  position: SidebarNavDropPosition;
+};
 type AuthUser = {
   name?: string | null;
   email?: string | null;
+};
+
+type FirstLastName = {
+  firstName: string;
+  lastName: string;
 };
 
 type CrFormState = {
@@ -177,6 +191,14 @@ type AssistantMessage = {
   content: string;
 };
 
+type AssistantChatSession = {
+  id: string;
+  title: string;
+  messages: AssistantMessage[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 type EccSpeechRecognition = {
   continuous: boolean;
   interimResults: boolean;
@@ -210,6 +232,28 @@ type EccSpeechWindow = Window &
     SpeechRecognition?: EccSpeechRecognitionConstructor;
     webkitSpeechRecognition?: EccSpeechRecognitionConstructor;
   };
+
+type LocalVoiceMode = "dictation" | "voice";
+
+type LocalVoiceSession = {
+  mode: LocalVoiceMode;
+  stream: MediaStream;
+  audioContext: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  processor: ScriptProcessorNode;
+  outputGain: GainNode;
+  sampleRate: number;
+  processedSamples: number;
+  speechStartedAt: number | null;
+  lastSpeechAt: number;
+  noiseFloor: number;
+  calibrationFrames: number;
+  voicedFrames: number;
+  preRollFrames: Float32Array[];
+  speechFrames: Float32Array[];
+  finalizing: boolean;
+  cancelled: boolean;
+};
 
 type IntakeImageState = {
   dataUrl: string;
@@ -252,7 +296,32 @@ type WhiteboardDragState = {
   currentX: number;
   currentY: number;
   moved: boolean;
-  expanded: boolean;
+};
+
+type WorkflowPanState = {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startScrollLeft: number;
+  startScrollTop: number;
+  moved: boolean;
+};
+
+type WorkflowPhaseDragState = {
+  phaseId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  moved: boolean;
+};
+
+type WorkflowFocusRequest = {
+  key: string;
+  zoom: number;
 };
 
 type WorkflowPhaseState = "complete" | "active" | "blocked" | "pending";
@@ -273,6 +342,13 @@ type WorkflowTask = {
   label: string;
   field: TaskStateField;
   state: TaskState;
+  requirements?: string[];
+};
+
+type WorkflowDefinitionTask = {
+  label: string;
+  field: TaskStateField;
+  requirements?: string[];
 };
 
 type WorkflowPhase = {
@@ -401,7 +477,7 @@ const statuses: CrStatus[] = [
 
 const priorities: Priority[] = ["Low", "Medium", "High", "Critical"];
 const risks: Risk[] = ["Low", "Medium", "High"];
-const pageShell = "collins-dashboard min-h-screen bg-[#f6f6f1] text-gray-950";
+const pageShell = "collins-dashboard min-h-screen bg-[#f7f7f7] text-gray-950";
 const panelShell = "border border-gray-200 bg-white shadow-none";
 const panelHeader = "border-b border-gray-200 px-4 py-3";
 const sectionLabel =
@@ -409,9 +485,12 @@ const sectionLabel =
 const neutralBadge = "border-gray-200 bg-white text-gray-700";
 const maxProfilePhotoBytes = 2 * 1024 * 1024;
 const maxIntakeImageBytes = 8 * 1024 * 1024;
+const assistantChatHistoryStorageKey = "ecc.assistant.chatHistory.v1";
+const assistantMaxStoredChats = 40;
 const profilePhotoStorageEvent = "ecc-profile-photo-storage";
 const sidebarNavOrderStorageEvent = "ecc-sidebar-nav-order-storage";
 const sidebarNavOrderStorageKey = "ecc.sidebar.navOrder";
+const workflowPhasePositionsStorageKey = "ecc.workflow.phasePositions.v2";
 const defaultSidebarNavOrder: SidebarNavSection[] = [
   "dashboard",
   "workflow",
@@ -471,11 +550,23 @@ const approvalSources: ApprovalSource[] = [
 ];
 const whiteboardPadding = 24;
 const whiteboardNoteWidth = 232;
-const whiteboardExpandedNoteWidth = 344;
 const whiteboardNoteHeight = 178;
-const whiteboardExpandedNoteHeight = 360;
 const whiteboardColumnGap = 268;
 const whiteboardRowGap = 218;
+const workflowCanvasPadding = 28;
+const workflowPhaseCardWidth = 280;
+const workflowPhaseGap = 24;
+const workflowCanvasChartHeight = 520;
+const workflowMinZoom = 0.22;
+const workflowMaxZoom = 1.5;
+const workflowZoomStep = 0.1;
+const workflowCurrentStepInitialZoom = 1;
+const msEccNcdocRequirements = [
+  "ECC waiver PDF",
+  "OOC approvals PDF",
+  "Waiver approvals PDF",
+  "MS ECC Checklist PDF",
+];
 
 const statusTone: Record<CrStatus, string> = {
   Intake: "border-gray-200 bg-gray-50 text-gray-700",
@@ -573,7 +664,7 @@ const workflowPhaseDefinitions: Array<{
   label: string;
   detail: (cr: Cr) => string;
   statuses: CrStatus[];
-  tasks: Array<{ label: string; field: TaskStateField }>;
+  tasks: WorkflowDefinitionTask[];
 }> = [
   {
     id: "intake",
@@ -777,6 +868,13 @@ const workflowPhaseDotTone: Record<WorkflowPhaseState, string> = {
   pending: "border-gray-300 bg-white text-gray-400",
 };
 
+const workflowPhaseStemTone: Record<WorkflowPhaseState, string> = {
+  complete: "bg-emerald-500",
+  active: "bg-blue-500",
+  blocked: "bg-rose-500",
+  pending: "bg-slate-300",
+};
+
 export function CrTrackerApp() {
   const { data: session, isPending } = authClient.useSession();
 
@@ -842,7 +940,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isAssistantOpen, setIsAssistantOpen] = useState(true);
+  const [assistantView, setAssistantView] = useState<AssistantView>("closed");
   const [activeSection, setActiveSection] =
     useState<DashboardSection>("dashboard");
 
@@ -894,6 +992,10 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     const source = crs ?? [];
     return Array.from(new Set(source.map((cr) => cr.owner))).sort();
   }, [crs]);
+  const peopleOptions = useMemo(
+    () => buildPeopleOptions(crs ?? [], signedInName, signedInEmail),
+    [crs, signedInEmail, signedInName],
+  );
 
   const filteredCrs = useMemo(() => {
     const source = crs ?? [];
@@ -962,8 +1064,10 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     null;
 
   const stats = useMemo(() => buildStats(crs ?? []), [crs]);
+  const isAssistantOpen = assistantView !== "closed";
 
   function handleSectionChange(section: DashboardSection) {
+    setAssistantView((current) => (current === "full" ? "closed" : current));
     setActiveSection(section);
 
     if (
@@ -1012,6 +1116,9 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
           signedInEmail={signedInEmail}
           profilePhotoUrl={profilePhotoUrl}
           onBoardFilterChange={(nextBoard) => {
+            setAssistantView((current) =>
+              current === "full" ? "closed" : current,
+            );
             setBoardFilter(nextBoard);
             setScope("all");
             setActiveSection("allCrs");
@@ -1023,117 +1130,131 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
         <div className="flex min-w-0 flex-1 flex-col">
           <WorkspaceRibbon
             onCreate={() => setIsCreating(true)}
-            onAssistantToggle={() => setIsAssistantOpen((value) => !value)}
+            onAssistantToggle={() =>
+              setAssistantView((current) =>
+                current === "closed" ? "rail" : "closed",
+              )
+            }
             onSettings={() => handleSectionChange("settings")}
+            showLogo={!isSidebarOpen}
             isAssistantOpen={isAssistantOpen}
             isFullscreen={isAppFullscreen}
             fullscreenSupported={isAppFullscreenSupported}
             onFullscreenToggle={() => void toggleAppFullscreen()}
           />
 
-          <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-gray-50">
-            {activeSection === "settings" ? (
-              <div className="mx-auto max-w-[1400px] p-5">
-                <SettingsPage
-                  signedInName={signedInName}
-                  signedInEmail={signedInEmail}
-                  profilePhotoUrl={profilePhotoUrl}
-                  localOwner={localOwner}
-                  viewMode={viewMode}
-                  boardFilter={boardFilter}
-                  onLocalOwnerChange={setLocalOwner}
-                  onProfilePhotoChange={handleProfilePhotoChange}
-                  onViewModeChange={setViewMode}
-                  onBoardFilterChange={setBoardFilter}
-                  onSignOut={() => void authClient.signOut()}
-                />
+          <main className="relative flex min-h-0 flex-1 overflow-hidden bg-gray-50">
+            {assistantView === "full" ? null : activeSection === "settings" ? (
+              <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                <div className="mx-auto max-w-[1400px] p-5">
+                  <SettingsPage
+                    signedInName={signedInName}
+                    signedInEmail={signedInEmail}
+                    profilePhotoUrl={profilePhotoUrl}
+                    localOwner={localOwner}
+                    viewMode={viewMode}
+                    boardFilter={boardFilter}
+                    onLocalOwnerChange={setLocalOwner}
+                    onProfilePhotoChange={handleProfilePhotoChange}
+                    onViewModeChange={setViewMode}
+                    onBoardFilterChange={setBoardFilter}
+                    onSignOut={() => void authClient.signOut()}
+                  />
+                </div>
               </div>
             ) : (
-              <div
-                className={cn(
-                  "mx-auto grid max-w-[1800px] gap-5 p-5",
-                  isAssistantOpen && "2xl:grid-cols-[minmax(0,1fr)_400px]",
-                )}
-              >
-                <div className="min-w-0 space-y-5">
-                  {activeSection === "dashboard" ? (
-                    <DashboardHome
-                      crs={crs ?? []}
-                      localOwner={localOwner}
-                      notice={notice}
-                      stats={stats}
-                    />
-                  ) : activeSection === "workflow" ? (
-                    <>
-                      <FilterBar
-                        owners={owners}
-                        statusFilter={statusFilter}
-                        priorityFilter={priorityFilter}
-                        riskFilter={riskFilter}
-                        boardFilter={boardFilter}
-                        classificationFilter={classificationFilter}
-                        ownerFilter={ownerFilter}
-                        search={search}
-                        onStatusFilterChange={setStatusFilter}
-                        onPriorityFilterChange={setPriorityFilter}
-                        onRiskFilterChange={setRiskFilter}
-                        onBoardFilterChange={setBoardFilter}
-                        onClassificationFilterChange={setClassificationFilter}
-                        onOwnerFilterChange={setOwnerFilter}
-                        onSearchChange={setSearch}
-                      />
-                      <WorkflowWorkspace
-                        crs={filteredCrs}
-                        loading={!crs}
-                        selectedCr={selectedCr}
-                        selectedId={selectedCr?._id ?? null}
-                        scope={scope}
-                        onSelect={setSelectedId}
-                      />
-                    </>
-                  ) : activeSection === "analytics" ? (
-                    <AnalyticsHome crs={crs ?? []} localOwner={localOwner} />
-                  ) : (
-                    <RequestWorkspace
-                      crs={filteredCrs}
-                      loading={!crs}
-                      selectedId={selectedId}
-                      selectedCr={selectedCr}
-                      scope={scope}
-                      viewMode={viewMode}
-                      owners={owners}
-                      statusFilter={statusFilter}
-                      priorityFilter={priorityFilter}
-                      riskFilter={riskFilter}
-                      boardFilter={boardFilter}
-                      classificationFilter={classificationFilter}
-                      ownerFilter={ownerFilter}
-                      search={search}
-                      movingId={movingId}
-                      onSelect={setSelectedId}
-                      onViewModeChange={setViewMode}
-                      onStatusFilterChange={setStatusFilter}
-                      onPriorityFilterChange={setPriorityFilter}
-                      onRiskFilterChange={setRiskFilter}
-                      onBoardFilterChange={setBoardFilter}
-                      onClassificationFilterChange={setClassificationFilter}
-                      onOwnerFilterChange={setOwnerFilter}
-                      onSearchChange={setSearch}
-                      onKanbanStatusChange={(cr, status) =>
-                        void handleKanbanStatusChange(cr, status)
-                      }
-                    />
-                  )}
+              <>
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                  <div className="mx-auto max-w-[1800px] p-5">
+                    <div className="min-w-0 space-y-5">
+                      {activeSection === "dashboard" ? (
+                        <DashboardHome
+                          crs={crs ?? []}
+                          notice={notice}
+                          stats={stats}
+                        />
+                      ) : activeSection === "workflow" ? (
+                        <>
+                          <FilterBar
+                            owners={owners}
+                            statusFilter={statusFilter}
+                            priorityFilter={priorityFilter}
+                            riskFilter={riskFilter}
+                            boardFilter={boardFilter}
+                            classificationFilter={classificationFilter}
+                            ownerFilter={ownerFilter}
+                            search={search}
+                            onStatusFilterChange={setStatusFilter}
+                            onPriorityFilterChange={setPriorityFilter}
+                            onRiskFilterChange={setRiskFilter}
+                            onBoardFilterChange={setBoardFilter}
+                            onClassificationFilterChange={
+                              setClassificationFilter
+                            }
+                            onOwnerFilterChange={setOwnerFilter}
+                            onSearchChange={setSearch}
+                          />
+                          <WorkflowWorkspace
+                            crs={filteredCrs}
+                            loading={!crs}
+                            selectedCr={selectedCr}
+                            selectedId={selectedCr?._id ?? null}
+                            onSelect={setSelectedId}
+                          />
+                        </>
+                      ) : activeSection === "analytics" ? (
+                        <AnalyticsHome crs={crs ?? []} localOwner={localOwner} />
+                      ) : (
+                        <RequestWorkspace
+                          crs={filteredCrs}
+                          loading={!crs}
+                          selectedId={selectedId}
+                          selectedCr={selectedCr}
+                          scope={scope}
+                          viewMode={viewMode}
+                          owners={owners}
+                          statusFilter={statusFilter}
+                          priorityFilter={priorityFilter}
+                          riskFilter={riskFilter}
+                          boardFilter={boardFilter}
+                          classificationFilter={classificationFilter}
+                          ownerFilter={ownerFilter}
+                          search={search}
+                          movingId={movingId}
+                          peopleOptions={peopleOptions}
+                          onSelect={setSelectedId}
+                          onViewModeChange={setViewMode}
+                          onStatusFilterChange={setStatusFilter}
+                          onPriorityFilterChange={setPriorityFilter}
+                          onRiskFilterChange={setRiskFilter}
+                          onBoardFilterChange={setBoardFilter}
+                          onClassificationFilterChange={setClassificationFilter}
+                          onOwnerFilterChange={setOwnerFilter}
+                          onSearchChange={setSearch}
+                          onKanbanStatusChange={(cr, status) =>
+                            void handleKanbanStatusChange(cr, status)
+                          }
+                        />
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                {isAssistantOpen ? (
-                  <AssistantPanel
-                    selectedCr={selectedCr}
-                    onClose={() => setIsAssistantOpen(false)}
-                  />
-                ) : null}
-              </div>
+              </>
             )}
+            {assistantView !== "closed" ? (
+              <AssistantPanel
+                key="assistant"
+                variant={assistantView === "full" ? "full" : "rail"}
+                selectedCr={selectedCr}
+                localOwner={localOwner}
+                signedInName={signedInName}
+                signedInEmail={signedInEmail}
+                onClose={() => setAssistantView("closed")}
+                onDock={() => setAssistantView("rail")}
+                onExpand={() => setAssistantView("full")}
+              />
+            ) : null}
           </main>
         </div>
       </div>
@@ -1141,6 +1262,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
       {isCreating ? (
         <NewCrModal
           createCr={createCr}
+          peopleOptions={peopleOptions}
           onCreated={(id) => {
             setIsCreating(false);
             setSelectedId(id);
@@ -1157,12 +1279,10 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
 
 function DashboardHome({
   crs,
-  localOwner,
   notice,
   stats,
 }: {
   crs: Cr[];
-  localOwner: string;
   notice: string;
   stats: ReturnType<typeof buildStats>;
 }) {
@@ -1197,12 +1317,11 @@ function DashboardHome({
                 </span>
               </div>
             ) : null}
-            <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
               <Info label="Open" value={`${stats.open}`} />
               <Info label="Attention" value={`${attentionCount}`} />
               <Info label="Actions" value={`${actionCount}`} />
               <Info label="Approvals" value={`${approvalCount}`} />
-              <Info label="Owner" value={localOwner || "Not set"} />
             </div>
           </div>
         </div>
@@ -1776,6 +1895,7 @@ function RequestWorkspace({
   ownerFilter,
   search,
   movingId,
+  peopleOptions,
   onSelect,
   onViewModeChange,
   onStatusFilterChange,
@@ -1802,6 +1922,7 @@ function RequestWorkspace({
   ownerFilter: string;
   search: string;
   movingId: CrId | null;
+  peopleOptions: string[];
   onSelect: (id: CrId) => void;
   onViewModeChange: (mode: ViewMode) => void;
   onStatusFilterChange: (value: StatusFilter) => void;
@@ -1857,26 +1978,24 @@ function RequestWorkspace({
             title={scopeTitle(scope)}
             onSelect={onSelect}
           />
-          <CrDetails key={selectedId ?? "empty"} cr={selectedCr} />
+          <CrDetails
+            key={selectedId ?? "empty"}
+            cr={selectedCr}
+            peopleOptions={peopleOptions}
+          />
         </section>
       ) : viewMode === "excel" ? (
-        <section
-          id="requests"
-          className="grid gap-5 min-[1280px]:grid-cols-[minmax(0,1fr)_430px]"
-        >
+        <section id="requests">
           <CrSharePointList
             crs={crs}
             loading={loading}
             selectedId={selectedId}
+            peopleOptions={peopleOptions}
             onSelect={onSelect}
           />
-          <CrDetails key={selectedId ?? "empty"} cr={selectedCr} />
         </section>
       ) : viewMode === "kanban" ? (
-        <section
-          id="requests"
-          className="grid gap-5 min-[1180px]:grid-cols-[minmax(0,1fr)_430px]"
-        >
+        <section id="requests">
           <KanbanBoard
             crs={crs}
             loading={loading}
@@ -1885,7 +2004,6 @@ function RequestWorkspace({
             onSelect={onSelect}
             onStatusChange={onKanbanStatusChange}
           />
-          <CrDetails key={selectedId ?? "empty"} cr={selectedCr} />
         </section>
       ) : (
         <section id="requests">
@@ -1893,6 +2011,7 @@ function RequestWorkspace({
             crs={crs}
             loading={loading}
             selectedId={whiteboardSelectedId}
+            peopleOptions={peopleOptions}
             onSelect={onSelect}
           />
         </section>
@@ -1905,6 +2024,7 @@ function WorkspaceRibbon({
   onCreate,
   onAssistantToggle,
   onSettings,
+  showLogo,
   isAssistantOpen,
   isFullscreen,
   fullscreenSupported,
@@ -1913,13 +2033,32 @@ function WorkspaceRibbon({
   onCreate: () => void;
   onAssistantToggle: () => void;
   onSettings: () => void;
+  showLogo: boolean;
   isAssistantOpen: boolean;
   isFullscreen: boolean;
   fullscreenSupported: boolean;
   onFullscreenToggle: () => void;
 }) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-end border-b border-gray-200 bg-white px-5">
+    <header className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-5">
+      {showLogo ? (
+        <a
+          href="#dashboard"
+          className="block min-w-0 shrink"
+          aria-label="Collins Aerospace"
+        >
+          <Image
+            src="/collins-aerospace-logo.svg"
+            alt="Collins Aerospace"
+            width={184}
+            height={46}
+            className="h-9 w-auto max-w-[170px]"
+            priority
+          />
+        </a>
+      ) : (
+        <span aria-hidden="true" />
+      )}
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -1934,10 +2073,8 @@ function WorkspaceRibbon({
           type="button"
           onClick={onAssistantToggle}
           className="flex h-9 w-9 items-center justify-center border border-gray-200 text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950"
-          aria-label={
-            isAssistantOpen ? "Hide AI assistant" : "Show AI assistant"
-          }
-          title={isAssistantOpen ? "Hide AI assistant" : "Show AI assistant"}
+          aria-label={isAssistantOpen ? "Close Collins AI" : "Open Collins AI"}
+          title={isAssistantOpen ? "Close Collins AI" : "Open Collins AI"}
         >
           {isAssistantOpen ? (
             <PanelRightClose className="h-4 w-4" />
@@ -2006,6 +2143,20 @@ function SettingsPage({
 }) {
   const profilePhotoInputRef = useRef<HTMLInputElement>(null);
   const [profilePhotoMessage, setProfilePhotoMessage] = useState("");
+  const [profileNameFields, setProfileNameFields] = useState(() =>
+    splitFirstLastName(localOwner),
+  );
+
+  function handleProfileNameFieldChange(
+    field: keyof FirstLastName,
+    value: string,
+  ) {
+    const nextFields = { ...profileNameFields, [field]: value };
+    setProfileNameFields(nextFields);
+    onLocalOwnerChange(
+      buildFullName(nextFields.firstName, nextFields.lastName),
+    );
+  }
 
   function handleProfilePhotoFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
@@ -2136,15 +2287,28 @@ function SettingsPage({
             </div>
           </div>
 
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div className="mt-5 grid gap-4 md:grid-cols-3">
             <label className="block">
-              <span className={cn("mb-1 block", sectionLabel)}>
-                First name last name
-              </span>
+              <span className={cn("mb-1 block", sectionLabel)}>First name</span>
               <Input
-                value={localOwner}
-                onChange={(event) => onLocalOwnerChange(event.target.value)}
-                placeholder="Owner name"
+                value={profileNameFields.firstName}
+                onChange={(event) =>
+                  handleProfileNameFieldChange("firstName", event.target.value)
+                }
+                placeholder="First name"
+                autoComplete="given-name"
+                className="bg-white"
+              />
+            </label>
+            <label className="block">
+              <span className={cn("mb-1 block", sectionLabel)}>Last name</span>
+              <Input
+                value={profileNameFields.lastName}
+                onChange={(event) =>
+                  handleProfileNameFieldChange("lastName", event.target.value)
+                }
+                placeholder="Last name"
+                autoComplete="family-name"
                 className="bg-white"
               />
             </label>
@@ -2233,10 +2397,15 @@ function ProfileAvatar({
   name: string;
   email: string | null;
   photoUrl?: string | null;
-  size?: "md" | "lg";
+  size?: "sm" | "md" | "lg";
 }) {
   const initials = getProfileInitials(name, email);
-  const sizeClass = size === "lg" ? "h-16 w-16 text-lg" : "h-10 w-10 text-sm";
+  const sizeClass =
+    size === "lg"
+      ? "h-16 w-16 text-lg"
+      : size === "sm"
+        ? "h-8 w-8 text-xs"
+        : "h-10 w-10 text-sm";
   if (photoUrl) {
     return (
       <span
@@ -2286,7 +2455,8 @@ function AuthLoadingScreen() {
 
 function LoginScreen() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -2299,10 +2469,11 @@ function LoginScreen() {
 
     try {
       if (mode === "signup") {
+        const fullName = buildFullName(firstName, lastName);
         const result = await authClient.signUp.email({
           email,
           password,
-          name: name.trim() || email,
+          name: fullName || email,
         });
         if (result.error) {
           throw new Error(result.error.message ?? "Unable to create account.");
@@ -2383,15 +2554,30 @@ function LoginScreen() {
 
           <div className="mt-6 space-y-4">
             {mode === "signup" ? (
-              <label className="block">
-                <span className={cn("mb-1 block", sectionLabel)}>Name</span>
-                <Input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Your name"
-                  autoComplete="name"
-                />
-              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className={cn("mb-1 block", sectionLabel)}>
+                    First name
+                  </span>
+                  <Input
+                    value={firstName}
+                    onChange={(event) => setFirstName(event.target.value)}
+                    placeholder="First name"
+                    autoComplete="given-name"
+                  />
+                </label>
+                <label className="block">
+                  <span className={cn("mb-1 block", sectionLabel)}>
+                    Last name
+                  </span>
+                  <Input
+                    value={lastName}
+                    onChange={(event) => setLastName(event.target.value)}
+                    placeholder="Last name"
+                    autoComplete="family-name"
+                  />
+                </label>
+              </div>
             ) : null}
 
             <label className="block">
@@ -2575,14 +2761,15 @@ function TrackerSidebar({
   const navItems = navOrder.map((section) => navItemBySection[section]);
   const [draggingNavSection, setDraggingNavSection] =
     useState<SidebarNavSection | null>(null);
-  const [dragOverNavSection, setDragOverNavSection] =
-    useState<SidebarNavSection | null>(null);
+  const [navDropTarget, setNavDropTarget] =
+    useState<SidebarNavDropTarget | null>(null);
 
   function handleNavDragStart(
     event: DragEvent<HTMLElement>,
     section: SidebarNavSection,
   ) {
     setDraggingNavSection(section);
+    setNavDropTarget(null);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", section);
     const navItem = event.currentTarget.closest("[data-sidebar-nav-item]");
@@ -2597,7 +2784,35 @@ function TrackerSidebar({
   ) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    setDragOverNavSection(section);
+    if (!draggingNavSection || draggingNavSection === section) {
+      setNavDropTarget(null);
+      return;
+    }
+
+    const nextDropTarget: SidebarNavDropTarget = {
+      section,
+      position: getSidebarNavDropPosition(event),
+    };
+    setNavDropTarget((current) =>
+      current?.section === nextDropTarget.section &&
+      current.position === nextDropTarget.position
+        ? current
+        : nextDropTarget,
+    );
+  }
+
+  function handleNavDragLeave(
+    event: DragEvent<HTMLElement>,
+    section: SidebarNavSection,
+  ) {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    setNavDropTarget((current) =>
+      current?.section === section ? null : current,
+    );
   }
 
   function handleNavDrop(
@@ -2608,21 +2823,33 @@ function TrackerSidebar({
     const sourceSection =
       normalizeSidebarNavSection(event.dataTransfer.getData("text/plain")) ??
       draggingNavSection;
+    const dropTarget =
+      navDropTarget?.section === targetSection
+        ? navDropTarget
+        : {
+            section: targetSection,
+            position: getSidebarNavDropPosition(event),
+          };
 
     if (sourceSection && sourceSection !== targetSection) {
       writeSidebarNavOrder(
-        reorderSidebarNavOrder(navOrder, sourceSection, targetSection),
+        reorderSidebarNavOrder(
+          navOrder,
+          sourceSection,
+          dropTarget.section,
+          dropTarget.position,
+        ),
       );
       notifySidebarNavOrderStorageChange();
     }
 
     setDraggingNavSection(null);
-    setDragOverNavSection(null);
+    setNavDropTarget(null);
   }
 
   function handleNavDragEnd() {
     setDraggingNavSection(null);
-    setDragOverNavSection(null);
+    setNavDropTarget(null);
   }
 
   return (
@@ -2634,7 +2861,7 @@ function TrackerSidebar({
     >
       <div
         className={cn(
-          "flex min-h-[68px] shrink-0 items-center border-b border-gray-200 p-3",
+          "flex h-14 shrink-0 items-center border-b border-gray-200 px-3",
           isOpen ? "justify-between gap-3" : "justify-center",
         )}
       >
@@ -2666,9 +2893,9 @@ function TrackerSidebar({
           title={isOpen ? "Close sidebar" : "Open sidebar"}
         >
           {isOpen ? (
-            <PanelLeftClose className="h-5 w-5" />
+            <PanelLeftClose className="h-4 w-4" />
           ) : (
-            <PanelLeftOpen className="h-5 w-5" />
+            <PanelLeftOpen className="h-4 w-4" />
           )}
         </button>
       </div>
@@ -2679,26 +2906,33 @@ function TrackerSidebar({
             const Icon = item.icon;
             const active = activeSection === item.section;
             const dragging = draggingNavSection === item.section;
-            const dragOver =
-              dragOverNavSection === item.section &&
-              draggingNavSection !== item.section;
+            const dropTarget =
+              navDropTarget?.section === item.section &&
+              draggingNavSection !== item.section
+                ? navDropTarget
+                : null;
 
             return isOpen ? (
               <div
                 key={item.label}
                 data-sidebar-nav-item
                 onDragOver={(event) => handleNavDragOver(event, item.section)}
-                onDragLeave={() => setDragOverNavSection(null)}
+                onDragLeave={(event) =>
+                  handleNavDragLeave(event, item.section)
+                }
                 onDrop={(event) => handleNavDrop(event, item.section)}
                 className={cn(
-                  "group flex w-full items-center justify-between gap-2 border-l-2 text-sm transition",
+                  "group relative flex w-full items-center justify-between gap-2 border-l-2 text-sm transition",
                   active
                     ? "border-gray-950 bg-gray-100 text-gray-950"
                     : "border-transparent text-gray-600 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-950",
                   dragging && "opacity-50",
-                  dragOver && "border-gray-950 bg-gray-100",
+                  dropTarget && "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
                 )}
               >
+                {dropTarget ? (
+                  <SidebarNavDropIndicator position={dropTarget.position} />
+                ) : null}
                 <button
                   type="button"
                   onClick={() => onSectionChange(item.section)}
@@ -2726,19 +2960,27 @@ function TrackerSidebar({
                 key={item.label}
                 type="button"
                 onDragOver={(event) => handleNavDragOver(event, item.section)}
-                onDragLeave={() => setDragOverNavSection(null)}
+                onDragLeave={(event) =>
+                  handleNavDragLeave(event, item.section)
+                }
                 onDrop={(event) => handleNavDrop(event, item.section)}
                 onClick={() => onSectionChange(item.section)}
                 className={cn(
-                  "flex h-10 w-full items-center justify-center border-l-2 text-sm font-semibold transition outline-none focus-visible:ring-1 focus-visible:ring-gray-950",
+                  "relative flex h-10 w-full items-center justify-center border-l-2 text-sm font-semibold transition outline-none focus-visible:ring-1 focus-visible:ring-gray-950",
                   active
                     ? "border-gray-950 bg-gray-100 text-gray-950"
                     : "border-transparent text-gray-500 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-950",
                   dragging && "opacity-50",
-                  dragOver && "border-gray-950 bg-gray-100",
+                  dropTarget && "bg-gray-100 text-gray-950 ring-1 ring-inset ring-gray-300",
                 )}
                 title={item.label}
               >
+                {dropTarget ? (
+                  <SidebarNavDropIndicator
+                    compact
+                    position={dropTarget.position}
+                  />
+                ) : null}
                 <Icon className="h-4 w-4" />
               </button>
             );
@@ -2771,37 +3013,63 @@ function TrackerSidebar({
         ) : null}
       </nav>
 
-      {isOpen ? (
-        <div className="border-t border-gray-200 p-3">
-          <button
-            type="button"
-            onClick={() => onSectionChange("settings")}
-            className={cn(
-              "flex w-full min-w-0 items-center gap-3 border-l-2 border-transparent px-3 py-2 text-left transition hover:border-gray-300 hover:bg-gray-100",
-              activeSection === "settings" && "border-gray-950 bg-gray-100",
-            )}
-            aria-label="Open settings"
-            title="Open settings"
-          >
-            <ProfileAvatar
-              name={signedInName}
-              email={signedInEmail}
-              photoUrl={profilePhotoUrl}
-            />
+      <div className={cn("border-t border-gray-200", isOpen ? "p-3" : "p-2")}>
+        <button
+          type="button"
+          onClick={() => onSectionChange("settings")}
+          className={cn(
+            "flex w-full min-w-0 items-center border-l-2 border-transparent text-left transition hover:border-gray-300 hover:bg-gray-100",
+            isOpen
+              ? "gap-2.5 px-2.5 py-1.5"
+              : "h-10 justify-center px-0 py-0",
+            activeSection === "settings" && "border-gray-950 bg-gray-100",
+          )}
+          aria-label="Open settings"
+          title={isOpen ? "Open settings" : signedInName}
+        >
+          <ProfileAvatar
+            name={signedInName}
+            email={signedInEmail}
+            photoUrl={profilePhotoUrl}
+            size="sm"
+          />
+          {isOpen ? (
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-gray-950">
+              <p className="truncate text-xs font-semibold text-gray-950">
                 {signedInName}
               </p>
               {signedInEmail ? (
-                <p className="truncate text-xs text-gray-500">
+                <p className="truncate text-[11px] text-gray-500">
                   {signedInEmail}
                 </p>
               ) : null}
             </div>
-          </button>
-        </div>
-      ) : null}
+          ) : null}
+        </button>
+      </div>
     </aside>
+  );
+}
+
+function SidebarNavDropIndicator({
+  position,
+  compact = false,
+}: {
+  position: SidebarNavDropPosition;
+  compact?: boolean;
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none absolute left-2 right-2 z-10 flex items-center",
+        position === "before" ? "-top-1" : "-bottom-1",
+        compact && "left-1.5 right-1.5",
+      )}
+    >
+      <span className="h-2 w-2 rounded-full bg-gray-950 shadow-[0_0_0_2px_white]" />
+      <span className="h-0.5 flex-1 rounded-full bg-gray-950 shadow-[0_0_0_1px_rgba(255,255,255,0.9)]" />
+    </span>
   );
 }
 
@@ -2897,34 +3165,100 @@ function FilterBar({
   onOwnerFilterChange: (value: string) => void;
   onSearchChange: (value: string) => void;
 }) {
+  const activeFilterCount = [
+    search.trim().length > 0,
+    statusFilter !== "All",
+    priorityFilter !== "All",
+    riskFilter !== "All",
+    boardFilter !== "All",
+    classificationFilter !== "All",
+    ownerFilter !== "All",
+  ].filter(Boolean).length;
+  const hasActiveFilters = activeFilterCount > 0;
+
+  function resetFilters() {
+    onSearchChange("");
+    onStatusFilterChange("All");
+    onPriorityFilterChange("All");
+    onRiskFilterChange("All");
+    onBoardFilterChange("All");
+    onClassificationFilterChange("All");
+    onOwnerFilterChange("All");
+  }
+
   return (
-    <section id="filters" className={cn(panelShell, "p-3")}>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className={sectionLabel}>Filters</p>
-          <p className="text-sm text-slate-600">
-            Segment the Collins Aerospace request queue.
-          </p>
+    <section id="filters" className={cn(panelShell, "overflow-hidden")}>
+      <div className="flex flex-col gap-3 border-b border-gray-100 bg-slate-50/70 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm">
+            <SlidersHorizontal className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className={sectionLabel}>Filters</p>
+            <p className="truncate text-sm font-medium text-slate-800">
+              Collins Aerospace request queue
+            </p>
+          </div>
         </div>
-        <SlidersHorizontal className="h-4 w-4 text-slate-400" />
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn(
+              "inline-flex h-8 items-center rounded-md border px-3 text-xs font-medium",
+              hasActiveFilters
+                ? "border-slate-300 bg-white text-slate-700"
+                : "border-transparent bg-slate-100 text-slate-500",
+            )}
+          >
+            {hasActiveFilters
+              ? `${activeFilterCount} active`
+              : "All requests"}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={resetFilters}
+            disabled={!hasActiveFilters}
+            className="border-slate-200 bg-white text-slate-600 shadow-sm hover:bg-slate-100 hover:text-slate-950"
+          >
+            <X className="h-3.5 w-3.5" />
+            Reset
+          </Button>
+        </div>
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_repeat(6,minmax(120px,170px))]">
-        <label className="relative">
-          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-          <Input
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-            className="bg-white pl-9"
-            placeholder="Search CRs, systems, owners, tags..."
-          />
+      <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-[minmax(280px,1.4fr)_repeat(6,minmax(130px,1fr))]">
+        <label className="block min-w-0 md:col-span-2 xl:col-span-1">
+          <span className={cn("mb-1.5 block", sectionLabel)}>Search</span>
+          <span className="relative block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className={cn(
+                "h-10 rounded-md border-slate-200 bg-slate-50/60 pl-9 pr-9 text-sm shadow-sm",
+                "placeholder:text-slate-400 hover:border-slate-300 focus-visible:border-slate-500 focus-visible:bg-white focus-visible:ring-slate-200",
+              )}
+              placeholder="CR, system, owner, tag"
+            />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => onSearchChange("")}
+                className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700"
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </span>
         </label>
-        <Select
+        <FilterSelect
           label="Status"
           value={statusFilter}
           onChange={(value) => onStatusFilterChange(value as StatusFilter)}
           options={["All", ...statuses]}
         />
-        <Select
+        <FilterSelect
           label="Priority"
           value={priorityFilter}
           onChange={(value) =>
@@ -2932,19 +3266,19 @@ function FilterBar({
           }
           options={["All", ...priorities]}
         />
-        <Select
+        <FilterSelect
           label="Risk"
           value={riskFilter}
           onChange={(value) => onRiskFilterChange(value as Risk | "All")}
           options={["All", ...risks]}
         />
-        <Select
+        <FilterSelect
           label="Board"
           value={boardFilter}
           onChange={(value) => onBoardFilterChange(value as BoardFilter)}
           options={["All", ...eccBoards]}
         />
-        <Select
+        <FilterSelect
           label="Class"
           value={classificationFilter}
           onChange={(value) =>
@@ -2952,7 +3286,7 @@ function FilterBar({
           }
           options={["All", ...classifications]}
         />
-        <Select
+        <FilterSelect
           label="Owner"
           value={ownerFilter}
           onChange={onOwnerFilterChange}
@@ -2963,12 +3297,62 @@ function FilterBar({
   );
 }
 
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const active = value !== "All";
+
+  return (
+    <label className="block min-w-0">
+      <span
+        className={cn(
+          "mb-1.5 block",
+          sectionLabel,
+          active && "text-slate-700",
+        )}
+      >
+        {label}
+      </span>
+      <span className="relative block">
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className={cn(
+            "h-10 w-full appearance-none truncate rounded-md border bg-white px-3 pr-9 text-sm shadow-sm transition",
+            "focus-visible:border-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-200",
+            active
+              ? "border-slate-400 text-slate-950"
+              : "border-slate-200 text-slate-700 hover:border-slate-300",
+          )}
+        >
+          {options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+      </span>
+    </label>
+  );
+}
+
 function NewCrModal({
   createCr,
+  peopleOptions,
   onCreated,
   onCancel,
 }: {
   createCr: ReturnType<typeof useMutation<typeof api.crs.create>>;
+  peopleOptions: string[];
   onCreated: (id: CrId) => void;
   onCancel: () => void;
 }) {
@@ -2987,6 +3371,7 @@ function NewCrModal({
       >
         <NewCrPanel
           createCr={createCr}
+          peopleOptions={peopleOptions}
           onCreated={onCreated}
           onCancel={onCancel}
         />
@@ -2997,10 +3382,12 @@ function NewCrModal({
 
 function NewCrPanel({
   createCr,
+  peopleOptions,
   onCreated,
   onCancel,
 }: {
   createCr: ReturnType<typeof useMutation<typeof api.crs.create>>;
+  peopleOptions: string[];
   onCreated: (id: CrId) => void;
   onCancel: () => void;
 }) {
@@ -3086,6 +3473,7 @@ function NewCrPanel({
           submitLabel="Create CR"
           onSubmit={handleSubmit}
           variant="create"
+          peopleOptions={peopleOptions}
         />
         {isIntakeAssistantOpen ? (
           <CrIntakeAssistant
@@ -3398,11 +3786,13 @@ function CrSharePointList({
   crs,
   loading,
   selectedId,
+  peopleOptions,
   onSelect,
 }: {
   crs: Cr[];
   loading: boolean;
   selectedId: CrId | null;
+  peopleOptions: string[];
   onSelect: (id: CrId) => void;
 }) {
   const columns = [
@@ -3422,156 +3812,237 @@ function CrSharePointList({
     "Charge #",
     "Updated",
   ];
+  const [quickViewCr, setQuickViewCr] = useState<Cr | null>(null);
+  const openQuickView = useCallback((cr: Cr) => {
+    setQuickViewCr(cr);
+  }, []);
+  const closeQuickView = useCallback(() => setQuickViewCr(null), []);
 
   return (
-    <section
-      className={cn(
-        panelShell,
-        "min-h-[620px] overflow-hidden border-t-2 border-t-emerald-600",
-      )}
-    >
-      <div className={cn(panelHeader, "flex items-center justify-between")}>
-        <div>
-          <p className={sectionLabel}>Excel list</p>
-          <h2 className="mt-1 text-base font-semibold text-slate-950">
-            SharePoint-style CR register
-          </h2>
-          <p className="text-xs text-slate-500">{crs.length} rows shown</p>
+    <>
+      <section
+        className={cn(
+          panelShell,
+          "min-h-[620px] overflow-hidden border-t-2 border-t-slate-300",
+        )}
+      >
+        <div className={cn(panelHeader, "flex items-center justify-between")}>
+          <div>
+            <p className={sectionLabel}>Excel list</p>
+            <h2 className="mt-1 text-base font-semibold text-slate-950">
+              SharePoint-style CR register
+            </h2>
+            <p className="text-xs text-slate-500">{crs.length} rows shown</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                downloadAnalyticsWorkbook(crs, "Filtered register", "ecc-crs")
+              }
+              disabled={crs.length === 0}
+            >
+              <Download className="h-4 w-4" />
+              Export Excel
+            </Button>
+            <Table2 className="h-4 w-4 text-slate-400" />
+            <RefreshCw
+              className={cn(
+                "h-4 w-4 text-slate-400",
+                loading && "animate-spin",
+              )}
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              downloadAnalyticsWorkbook(crs, "Filtered register", "ecc-crs")
-            }
-            disabled={crs.length === 0}
-          >
-            <Download className="h-4 w-4" />
-            Export Excel
-          </Button>
-          <Table2 className="h-4 w-4 text-slate-400" />
-          <RefreshCw
-            className={cn("h-4 w-4 text-slate-400", loading && "animate-spin")}
-          />
-        </div>
-      </div>
 
-      {loading ? (
-        <div className="flex h-40 items-center justify-center text-sm text-slate-500">
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          Loading CRs
-        </div>
-      ) : null}
+        {loading ? (
+          <div className="flex h-40 items-center justify-center text-sm text-slate-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading CRs
+          </div>
+        ) : null}
 
-      {!loading && crs.length === 0 ? (
-        <div className="p-6 text-sm text-slate-500">
-          No Collins Aerospace requests match the current filters.
-        </div>
-      ) : null}
+        {!loading && crs.length === 0 ? (
+          <div className="p-6 text-sm text-slate-500">
+            No Collins Aerospace requests match the current filters.
+          </div>
+        ) : null}
 
-      {!loading && crs.length > 0 ? (
-        <div className="max-h-[720px] overflow-auto bg-white">
-          <table className="w-full min-w-[1520px] border-collapse text-left text-xs">
-            <thead className="sticky top-0 z-10 bg-[#f3f7f5] text-slate-600">
-              <tr className="border-b border-slate-300">
-                {columns.map((column) => (
-                  <th
-                    key={column}
-                    scope="col"
-                    className="border-r border-slate-200 px-3 py-2 font-semibold"
-                  >
-                    {column}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {crs.map((cr) => {
-                const selected = selectedId === cr._id;
-                return (
-                  <tr
-                    key={cr._id}
-                    className={cn(
-                      "border-b border-slate-100 hover:bg-slate-50",
-                      selected && "bg-emerald-50/80 hover:bg-emerald-50",
-                    )}
-                  >
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => onSelect(cr._id)}
-                        className="font-mono font-semibold text-slate-800 underline-offset-2 hover:text-emerald-700 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gray-950"
-                      >
-                        {cr.crNumber}
-                      </button>
-                    </td>
-                    <td className="max-w-[320px] border-r border-slate-100 px-3 py-2">
-                      <p className="truncate font-medium text-slate-950">
-                        {cr.title}
-                      </p>
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      <Badge className={statusTone[cr.status]}>
-                        {cr.status}
-                      </Badge>
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      <Badge className={priorityTone[cr.priority]}>
-                        {cr.priority}
-                      </Badge>
-                    </td>
-                    <td
+        {!loading && crs.length > 0 ? (
+          <div className="max-h-[720px] overflow-auto bg-white">
+            <table className="w-full min-w-[1520px] border-collapse text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
+                <tr className="border-b border-slate-300">
+                  {columns.map((column) => (
+                    <th
+                      key={column}
+                      scope="col"
+                      className="border-r border-slate-200 px-3 py-2 font-semibold"
+                    >
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {crs.map((cr) => {
+                  const selected = selectedId === cr._id;
+                  return (
+                    <tr
+                      key={cr._id}
+                      aria-selected={selected}
+                      tabIndex={0}
+                      title="Double-click to open details"
+                      onClick={() => onSelect(cr._id)}
+                      onDoubleClick={() => {
+                        onSelect(cr._id);
+                        openQuickView(cr);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onSelect(cr._id);
+                        }
+                      }}
                       className={cn(
-                        "border-r border-slate-100 px-3 py-2 font-semibold",
-                        riskTone[cr.risk],
+                        "cursor-pointer border-b border-slate-100 outline-none hover:bg-slate-50 focus-visible:bg-slate-100 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-gray-950",
+                        selected && "bg-slate-100/80 hover:bg-slate-100",
                       )}
                     >
-                      {cr.risk}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.owner}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.eccBoard ?? "Other"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.classification ?? "TBD"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.currentGate ?? "None"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {[cr.meetingDate, cr.meetingTimeEst]
-                        .filter(Boolean)
-                        .join(" ") || "No date"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.targetDate ? dueLabel(cr) : "No target"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.ncdocNumber ?? "Not set"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.supplier ?? "Not set"}
-                    </td>
-                    <td className="border-r border-slate-100 px-3 py-2">
-                      {cr.wbsChargeNumber ?? "Not set"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className="text-slate-500">
-                        {formatTimestamp(cr.lastUpdatedAt)}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-    </section>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        <span className="font-mono font-semibold text-slate-800">
+                          {cr.crNumber}
+                        </span>
+                      </td>
+                      <td className="max-w-[320px] border-r border-slate-100 px-3 py-2">
+                        <p className="truncate font-medium text-slate-950">
+                          {cr.title}
+                        </p>
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        <Badge className={statusTone[cr.status]}>
+                          {cr.status}
+                        </Badge>
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        <Badge className={priorityTone[cr.priority]}>
+                          {cr.priority}
+                        </Badge>
+                      </td>
+                      <td
+                        className={cn(
+                          "border-r border-slate-100 px-3 py-2 font-semibold",
+                          riskTone[cr.risk],
+                        )}
+                      >
+                        {cr.risk}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.owner}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.eccBoard ?? "Other"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.classification ?? "TBD"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.currentGate ?? "None"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {[cr.meetingDate, cr.meetingTimeEst]
+                          .filter(Boolean)
+                          .join(" ") || "No date"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.targetDate ? dueLabel(cr) : "No target"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.ncdocNumber ?? "Not set"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.supplier ?? "Not set"}
+                      </td>
+                      <td className="border-r border-slate-100 px-3 py-2">
+                        {cr.wbsChargeNumber ?? "Not set"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="text-slate-500">
+                          {formatTimestamp(cr.lastUpdatedAt)}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
+      <CrQuickViewDialog
+        cr={quickViewCr}
+        peopleOptions={peopleOptions}
+        onClose={closeQuickView}
+      />
+    </>
+  );
+}
+
+function CrQuickViewDialog({
+  cr,
+  peopleOptions,
+  onClose,
+}: {
+  cr: Cr | null;
+  peopleOptions: string[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!cr || typeof document === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [cr, onClose]);
+
+  if (!cr) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Editable CR detail"
+        className="max-h-[calc(100vh-2rem)] w-full max-w-6xl overflow-y-auto shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <CrDetails
+          key={cr._id}
+          cr={cr}
+          peopleOptions={peopleOptions}
+          onClose={onClose}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -3580,43 +4051,16 @@ function WorkflowWorkspace({
   loading,
   selectedCr,
   selectedId,
-  scope,
   onSelect,
 }: {
   crs: Cr[];
   loading: boolean;
   selectedCr: Cr | null;
   selectedId: CrId | null;
-  scope: CrScope;
   onSelect: (id: CrId) => void;
 }) {
-  const currentPhase = selectedCr
-    ? getWorkflowCurrentPhase(selectedCr)
-    : "None";
-
   return (
     <section id="workflow" className="space-y-5">
-      <div className={cn(panelShell, "p-6")}>
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div>
-            <p className={sectionLabel}>Engineering Change Council</p>
-            <h1 className="mt-2 text-3xl font-semibold text-gray-950">
-              Workflow
-            </h1>
-            <p className="mt-3 max-w-4xl text-sm leading-6 text-gray-600">
-              Phase flow for each CR from intake through council review,
-              approvals, records, and closure.
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 xl:min-w-[620px]">
-            <Info label="Scope" value={scopeTitle(scope)} />
-            <Info label="Requests" value={`${crs.length}`} />
-            <Info label="Current Phase" value={currentPhase} />
-            <Info label="Selected" value={selectedCr?.crNumber ?? "None"} />
-          </div>
-        </div>
-      </div>
-
       <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
         <WorkflowCrPicker
           crs={crs}
@@ -3624,7 +4068,11 @@ function WorkflowWorkspace({
           selectedId={selectedId}
           onSelect={onSelect}
         />
-        <WorkflowChart cr={selectedCr} loading={loading} />
+        <WorkflowChart
+          key={selectedCr?._id ?? "workflow-chart"}
+          cr={selectedCr}
+          loading={loading}
+        />
       </div>
     </section>
   );
@@ -3718,9 +4166,218 @@ function WorkflowCrPicker({
 
 function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
   const updateCr = useMutation(api.crs.update);
+  const workflowPanelRef = useRef<HTMLElement>(null);
+  const workflowViewportRef = useRef<HTMLDivElement>(null);
+  const workflowCanvasShellRef = useRef<HTMLDivElement>(null);
+  const workflowPanRef = useRef<WorkflowPanState | null>(null);
+  const workflowPhaseDragRef = useRef<WorkflowPhaseDragState | null>(null);
+  const focusedWorkflowStepRef = useRef<string | null>(null);
+  const {
+    fullscreenSupported: isWorkflowFullscreenSupported,
+    isFullscreen: isWorkflowFullscreen,
+    toggleFullscreen: toggleWorkflowFullscreen,
+  } = useFullscreenTarget(workflowPanelRef);
   const [savingTaskField, setSavingTaskField] =
     useState<TaskStateField | null>(null);
   const [taskError, setTaskError] = useState("");
+  const [workflowZoom, setWorkflowZoom] = useState(1);
+  const [fitZoom, setFitZoom] = useState(1);
+  const [fitMode, setFitMode] = useState(false);
+  const [workflowViewportSize, setWorkflowViewportSize] = useState({
+    width: 0,
+    height: 0,
+  });
+  const [workflowFocusRequest, setWorkflowFocusRequest] =
+    useState<WorkflowFocusRequest | null>(null);
+  const [isPanningWorkflow, setIsPanningWorkflow] = useState(false);
+  const [draggingWorkflowPhaseId, setDraggingWorkflowPhaseId] = useState<
+    string | null
+  >(null);
+  const [workflowPhasePositions, setWorkflowPhasePositions] = useState<
+    Partial<Record<string, WhiteboardPosition>>
+  >(() => (cr ? readWorkflowPhasePositions(cr._id) : {}));
+  const workflowPhases = useMemo(() => (cr ? buildWorkflowPhases(cr) : []), [
+    cr,
+  ]);
+  const positionedWorkflowPhases = useMemo(
+    () =>
+      workflowPhases.map((phase, index) => ({
+        phase,
+        position:
+          workflowPhasePositions[phase.id] ??
+          defaultWorkflowPhasePosition(index),
+      })),
+    [workflowPhasePositions, workflowPhases],
+  );
+  const workflowCanvasSize = useMemo(
+    () =>
+      getWorkflowCanvasSize(
+        positionedWorkflowPhases.map((item) => item.position),
+        workflowPhases.length || workflowPhaseDefinitions.length,
+      ),
+    [positionedWorkflowPhases, workflowPhases.length],
+  );
+  const currentWorkflowPhaseIndex = cr ? getWorkflowPhaseIndex(cr) : 0;
+  const currentWorkflowPhaseItem =
+    positionedWorkflowPhases[currentWorkflowPhaseIndex] ??
+    positionedWorkflowPhases[0] ??
+    null;
+  const currentWorkflowFocusKey =
+    cr && currentWorkflowPhaseItem
+      ? `${cr._id}:${currentWorkflowPhaseItem.phase.id}`
+      : null;
+  const visibleWorkflowCanvasSize = useMemo(
+    () => ({
+      width: Math.max(
+        workflowCanvasSize.width,
+        Math.ceil(workflowViewportSize.width / workflowZoom),
+      ),
+      height: Math.max(
+        workflowCanvasSize.height,
+        Math.ceil(workflowViewportSize.height / workflowZoom),
+      ),
+    }),
+    [
+      workflowCanvasSize.height,
+      workflowCanvasSize.width,
+      workflowViewportSize.height,
+      workflowViewportSize.width,
+      workflowZoom,
+    ],
+  );
+
+  useEffect(() => {
+    const viewport = workflowViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    function updateFitZoom() {
+      const currentViewport = workflowViewportRef.current;
+      if (!currentViewport) {
+        return;
+      }
+
+      const availableWidth = Math.max(
+        1,
+        currentViewport.clientWidth - workflowCanvasPadding * 2,
+      );
+      const availableHeight = Math.max(
+        1,
+        currentViewport.clientHeight - workflowCanvasPadding * 2,
+      );
+      setWorkflowViewportSize((current) =>
+        current.width === currentViewport.clientWidth &&
+        current.height === currentViewport.clientHeight
+          ? current
+          : {
+              width: currentViewport.clientWidth,
+              height: currentViewport.clientHeight,
+            },
+      );
+      const nextFitZoom = clampWorkflowZoom(
+        Math.min(
+          1,
+          availableWidth / workflowCanvasSize.width,
+          availableHeight / workflowCanvasSize.height,
+        ),
+      );
+      setFitZoom(nextFitZoom);
+      if (fitMode) {
+        setWorkflowZoom(nextFitZoom);
+      }
+    }
+
+    updateFitZoom();
+    const resizeObserver = new ResizeObserver(updateFitZoom);
+    resizeObserver.observe(viewport);
+    window.addEventListener("resize", updateFitZoom);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateFitZoom);
+    };
+  }, [
+    fitMode,
+    isWorkflowFullscreen,
+    workflowCanvasSize.height,
+    workflowCanvasSize.width,
+  ]);
+
+  useEffect(() => {
+    const viewport = workflowViewportRef.current;
+    const canvasShell = workflowCanvasShellRef.current;
+    if (
+      !currentWorkflowFocusKey ||
+      !currentWorkflowPhaseItem ||
+      !viewport ||
+      !canvasShell ||
+      fitMode ||
+      focusedWorkflowStepRef.current === currentWorkflowFocusKey
+    ) {
+      return;
+    }
+
+    const currentPhaseCard = canvasShell.querySelector<HTMLElement>(
+      '[data-current-workflow-card="true"]',
+    );
+    const nextZoom = getWorkflowCurrentStepZoom(viewport, currentPhaseCard);
+    setWorkflowZoom(nextZoom);
+    setWorkflowFocusRequest({
+      key: currentWorkflowFocusKey,
+      zoom: nextZoom,
+    });
+  }, [
+    currentWorkflowFocusKey,
+    currentWorkflowPhaseItem,
+    fitMode,
+    isWorkflowFullscreen,
+  ]);
+
+  useEffect(() => {
+    const viewport = workflowViewportRef.current;
+    const canvasShell = workflowCanvasShellRef.current;
+    if (
+      !workflowFocusRequest ||
+      !currentWorkflowFocusKey ||
+      workflowFocusRequest.key !== currentWorkflowFocusKey ||
+      !viewport ||
+      !canvasShell ||
+      fitMode ||
+      Math.abs(workflowZoom - workflowFocusRequest.zoom) > 0.01
+    ) {
+      return;
+    }
+
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const currentPhaseCard = canvasShell.querySelector<HTMLElement>(
+          '[data-current-workflow-card="true"]',
+        );
+        if (!currentPhaseCard) {
+          return;
+        }
+
+        scrollWorkflowToPhase(viewport, currentPhaseCard);
+        focusedWorkflowStepRef.current = workflowFocusRequest.key;
+        setWorkflowFocusRequest((current) =>
+          current?.key === workflowFocusRequest.key ? null : current,
+        );
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+    };
+  }, [
+    currentWorkflowFocusKey,
+    fitMode,
+    workflowFocusRequest,
+    workflowZoom,
+  ]);
 
   async function handleTaskStateChange(task: WorkflowTask, state: TaskState) {
     if (!cr || task.state === state || savingTaskField) {
@@ -3744,6 +4401,178 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
     } finally {
       setSavingTaskField(null);
     }
+  }
+
+  function zoomWorkflowBy(delta: number) {
+    setFitMode(false);
+    setWorkflowZoom((current) => clampWorkflowZoom(current + delta));
+  }
+
+  function fitWorkflowCanvas() {
+    setFitMode(true);
+    setWorkflowFocusRequest(null);
+    setWorkflowZoom(fitZoom);
+    window.requestAnimationFrame(() => {
+      workflowViewportRef.current?.scrollTo({ left: 0, top: 0 });
+    });
+  }
+
+  function handleWorkflowWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+
+    event.preventDefault();
+    zoomWorkflowBy(event.deltaY > 0 ? -workflowZoomStep : workflowZoomStep);
+  }
+
+  function handleWorkflowPointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        "[data-workflow-card], button, input, select, textarea, summary, a",
+      )
+    ) {
+      return;
+    }
+
+    workflowPanRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScrollLeft: event.currentTarget.scrollLeft,
+      startScrollTop: event.currentTarget.scrollTop,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsPanningWorkflow(true);
+  }
+
+  function handleWorkflowPointerMove(
+    event: React.PointerEvent<HTMLDivElement>,
+  ) {
+    const panState = workflowPanRef.current;
+    if (!panState || panState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const deltaX = event.clientX - panState.startClientX;
+    const deltaY = event.clientY - panState.startClientY;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+      panState.moved = true;
+      event.preventDefault();
+    }
+
+    event.currentTarget.scrollLeft = panState.startScrollLeft - deltaX;
+    event.currentTarget.scrollTop = panState.startScrollTop - deltaY;
+  }
+
+  function stopWorkflowPan(event: React.PointerEvent<HTMLDivElement>) {
+    const panState = workflowPanRef.current;
+    if (!panState || panState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    workflowPanRef.current = null;
+    setIsPanningWorkflow(false);
+  }
+
+  function handleWorkflowPhasePointerDown(
+    event: React.PointerEvent<HTMLDivElement>,
+    phaseId: string,
+    position: WhiteboardPosition,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest("button, input, select, textarea, summary, a, label")
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    setFitMode(false);
+    workflowPhaseDragRef.current = {
+      phaseId,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: position.x,
+      startY: position.y,
+      currentX: position.x,
+      currentY: position.y,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDraggingWorkflowPhaseId(phaseId);
+  }
+
+  function handleWorkflowPhasePointerMove(
+    event: React.PointerEvent<HTMLDivElement>,
+  ) {
+    const dragState = workflowPhaseDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const deltaX = (event.clientX - dragState.startClientX) / workflowZoom;
+    const deltaY = (event.clientY - dragState.startClientY) / workflowZoom;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+      dragState.moved = true;
+      event.preventDefault();
+    }
+
+    const nextPosition = clampWorkflowPhasePosition({
+      x: dragState.startX + deltaX,
+      y: dragState.startY + deltaY,
+    });
+    dragState.currentX = nextPosition.x;
+    dragState.currentY = nextPosition.y;
+    setWorkflowPhasePositions((current) => ({
+      ...current,
+      [dragState.phaseId]: nextPosition,
+    }));
+  }
+
+  function stopWorkflowPhaseDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const dragState = workflowPhaseDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    workflowPhaseDragRef.current = null;
+    setDraggingWorkflowPhaseId(null);
+
+    if (!cr || !dragState.moved) {
+      return;
+    }
+
+    const nextPositions = {
+      ...workflowPhasePositions,
+      [dragState.phaseId]: {
+        x: dragState.currentX,
+        y: dragState.currentY,
+      },
+    };
+    setWorkflowPhasePositions(nextPositions);
+    saveWorkflowPhasePositions(cr._id, nextPositions);
   }
 
   if (loading) {
@@ -3771,55 +4600,183 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
     );
   }
 
-  const phases = buildWorkflowPhases(cr);
   const currentPhase = getWorkflowCurrentPhase(cr);
 
   return (
-    <section className={cn(panelShell, "min-h-[580px] overflow-hidden")}>
-      <div className={panelHeader}>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs font-semibold text-slate-700">
-                {cr.crNumber}
-              </span>
-              <Badge className={statusTone[cr.status]}>{cr.status}</Badge>
-              <Badge className={priorityTone[cr.priority]}>{cr.priority}</Badge>
-              <Badge className={neutralBadge}>{currentPhase}</Badge>
+    <section
+      ref={workflowPanelRef}
+      className={cn(
+        panelShell,
+        "flex min-h-[580px] flex-col overflow-hidden bg-white",
+        isWorkflowFullscreen && "h-screen min-h-0 border-0",
+      )}
+    >
+      <div className={cn(panelHeader, "shrink-0")}>
+        <div className="flex flex-col gap-4">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs font-semibold text-slate-700">
+                  {cr.crNumber}
+                </span>
+                <Badge className={statusTone[cr.status]}>{cr.status}</Badge>
+                <Badge className={priorityTone[cr.priority]}>
+                  {cr.priority}
+                </Badge>
+                <Badge className={neutralBadge}>{currentPhase}</Badge>
+              </div>
+              <h2 className="max-w-full break-words text-lg font-semibold text-slate-950">
+                {cr.title}
+              </h2>
+              <p className="mt-1 break-words text-sm text-slate-500">
+                {cr.eccBoard ?? "Other"} / {cr.classification ?? "TBD"} /{" "}
+                {cr.currentGate ?? "None"}
+              </p>
             </div>
-            <h2 className="text-lg font-semibold text-slate-950">{cr.title}</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              {cr.eccBoard ?? "Other"} / {cr.classification ?? "TBD"} /{" "}
-              {cr.currentGate ?? "None"}
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 lg:min-w-[520px]">
-            <Info label="Owner" value={cr.owner} />
-            <Info label="Meeting" value={cr.meetingDate ?? "No date"} />
-            <Info label="Need-by" value={cr.targetDate ?? "No date"} />
-            <Info label="Updated" value={formatTimestamp(cr.lastUpdatedAt)} />
+            <button
+              type="button"
+              onClick={() => void toggleWorkflowFullscreen()}
+              disabled={!isWorkflowFullscreenSupported}
+              className={cn(
+                "flex h-9 w-9 shrink-0 items-center justify-center border transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-40",
+                isWorkflowFullscreen
+                  ? "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white"
+                  : "border-gray-200 bg-white text-gray-700",
+              )}
+              aria-label={
+                isWorkflowFullscreen
+                  ? "Exit workflow fullscreen"
+                  : "Fullscreen workflow"
+              }
+              title={
+                isWorkflowFullscreenSupported
+                  ? isWorkflowFullscreen
+                    ? "Exit workflow fullscreen"
+                    : "Fullscreen workflow"
+                  : "Fullscreen is unavailable"
+              }
+            >
+              {isWorkflowFullscreen ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </button>
           </div>
         </div>
       </div>
 
-      <div className="p-5">
-        {taskError ? (
-          <p className="mb-4 border border-rose-100 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+      {taskError ? (
+        <div className="shrink-0 px-5 pt-4">
+          <p className="border border-rose-100 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
             {taskError}
           </p>
-        ) : null}
-        <div className="overflow-x-auto">
-          <div className="relative min-w-[1120px] pb-2 pt-8">
-            <div className="absolute left-12 right-12 top-12 h-px bg-slate-200" />
-            <div
-              className="relative grid gap-3"
-              style={{
-                gridTemplateColumns: `repeat(${phases.length}, minmax(128px, 1fr))`,
-              }}
+        </div>
+      ) : null}
+
+      <div
+        ref={workflowViewportRef}
+        onWheel={handleWorkflowWheel}
+        onPointerDown={handleWorkflowPointerDown}
+        onPointerMove={handleWorkflowPointerMove}
+        onPointerUp={stopWorkflowPan}
+        onPointerCancel={stopWorkflowPan}
+        className={cn(
+          "relative overflow-auto bg-white",
+          isWorkflowFullscreen
+            ? "min-h-0 flex-1"
+            : "h-[500px] max-h-[500px] min-h-0 shrink-0",
+          isPanningWorkflow ? "cursor-grabbing" : "cursor-grab",
+        )}
+      >
+        <div
+          ref={workflowCanvasShellRef}
+          className="relative mx-auto my-4"
+          style={{
+            width: visibleWorkflowCanvasSize.width * workflowZoom,
+            height: visibleWorkflowCanvasSize.height * workflowZoom,
+          }}
+        >
+          <div
+            className="relative"
+            style={{
+              width: visibleWorkflowCanvasSize.width,
+              height: visibleWorkflowCanvasSize.height,
+              backgroundColor: "#ffffff",
+              backgroundImage:
+                "radial-gradient(circle at center, #d4dae3 1.25px, transparent 1.35px)",
+              backgroundPosition: "12px 12px",
+              backgroundSize: "24px 24px",
+              transform: `scale(${workflowZoom})`,
+              transformOrigin: "top left",
+            }}
+          >
+            <svg
+              className="pointer-events-none absolute inset-0 z-0 overflow-visible"
+              width={visibleWorkflowCanvasSize.width}
+              height={visibleWorkflowCanvasSize.height}
+              aria-hidden="true"
             >
-              {phases.map((phase, index) => (
+              {positionedWorkflowPhases.slice(0, -1).map((item, index) => {
+                const nextItem = positionedWorkflowPhases[index + 1];
+                if (!nextItem) {
+                  return null;
+                }
+
+                const startX = item.position.x + workflowPhaseCardWidth / 2;
+                const startY = item.position.y + 16;
+                const endX = nextItem.position.x + workflowPhaseCardWidth / 2;
+                const endY = nextItem.position.y + 16;
+                const midX = (startX + endX) / 2;
+                const midY = (startY + endY) / 2;
+                const angle =
+                  (Math.atan2(endY - startY, endX - startX) * 180) / Math.PI;
+
+                return (
+                  <g key={`${item.phase.id}-${nextItem.phase.id}`}>
+                    <line
+                      x1={startX}
+                      y1={startY}
+                      x2={endX}
+                      y2={endY}
+                      stroke="#cbd5e1"
+                      strokeWidth="2"
+                    />
+                    <path
+                      d="M -6 -5 L 6 0 L -6 5 Z"
+                      fill="#64748b"
+                      transform={`translate(${midX} ${midY}) rotate(${angle})`}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+            {positionedWorkflowPhases.map(({ phase, position }, index) => (
+              <div
+                key={phase.id}
+                className={cn(
+                  "absolute left-0 top-0 touch-none select-none transition-shadow",
+                  draggingWorkflowPhaseId === phase.id
+                    ? "z-30 cursor-grabbing"
+                    : "z-10 cursor-grab",
+                )}
+                data-workflow-card
+                data-current-workflow-card={
+                  index === currentWorkflowPhaseIndex ? "true" : undefined
+                }
+                onPointerDown={(event) =>
+                  handleWorkflowPhasePointerDown(event, phase.id, position)
+                }
+                onPointerMove={handleWorkflowPhasePointerMove}
+                onPointerUp={stopWorkflowPhaseDrag}
+                onPointerCancel={stopWorkflowPhaseDrag}
+                style={{
+                  width: workflowPhaseCardWidth,
+                  transform: `translate(${position.x}px, ${position.y}px)`,
+                }}
+                title="Drag workflow phase"
+              >
                 <WorkflowPhaseCard
-                  key={phase.id}
                   phase={phase}
                   position={index + 1}
                   savingTaskField={savingTaskField}
@@ -3827,19 +4784,51 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
                     void handleTaskStateChange(task, state)
                   }
                 />
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
+      </div>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <Info label="NCDOC Number" value={cr.ncdocNumber ?? "Not set"} />
-          <Info label="Disposition" value={cr.disposition ?? "Not set"} />
-          <Info
-            label="Design Authority"
-            value={cr.designAuthority ?? "Not set"}
-          />
-          <Info label="Charge Number" value={cr.wbsChargeNumber ?? "Not set"} />
+      <div className="shrink-0 border-t border-gray-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={fitWorkflowCanvas}
+            className={cn(
+              "flex h-9 w-9 items-center justify-center border transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950",
+              fitMode
+                ? "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white"
+                : "border-gray-200 bg-white text-gray-700",
+            )}
+            aria-label="Fit workflow to view"
+            title="Fit workflow to view"
+          >
+            <Focus className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => zoomWorkflowBy(-workflowZoomStep)}
+            disabled={workflowZoom <= workflowMinZoom}
+            className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Zoom workflow out"
+            title="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </button>
+          <span className="flex h-9 min-w-16 items-center justify-center border border-gray-200 bg-white px-3 text-xs font-semibold tabular-nums text-slate-600">
+            {Math.round(workflowZoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={() => zoomWorkflowBy(workflowZoomStep)}
+            disabled={workflowZoom >= workflowMaxZoom}
+            className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Zoom workflow in"
+            title="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </section>
@@ -3863,8 +4852,8 @@ function WorkflowPhaseCard({
   );
 
   return (
-    <div className="relative">
-      <div className="mb-3 flex justify-center">
+    <div className="relative w-full" data-workflow-card>
+      <div className="flex flex-col items-center">
         <span
           className={cn(
             "z-10 flex h-8 w-8 items-center justify-center border-2 text-xs font-semibold",
@@ -3879,10 +4868,16 @@ function WorkflowPhaseCard({
             String(position).padStart(2, "0")
           )}
         </span>
+        <span
+          className={cn(
+            "h-4 w-px",
+            workflowPhaseStemTone[phase.state],
+          )}
+        />
       </div>
       <div
         className={cn(
-          "min-h-[230px] border p-3 shadow-sm",
+          "relative min-h-[244px] border p-3 shadow-sm",
           workflowPhaseTone[phase.state],
         )}
       >
@@ -3912,7 +4907,7 @@ function WorkflowPhaseCard({
               </span>
               <span
                 className={cn(
-                  "block truncate font-medium",
+                  "block whitespace-normal break-words font-medium",
                   checklistSummary.tone,
                 )}
               >
@@ -3955,36 +4950,63 @@ function WorkflowTaskChecklistRow({
   disabled: boolean;
   onStateChange: (state: TaskState) => void;
 }) {
+  const isComplete = task.state === "Complete";
+
   return (
-    <div className="grid gap-2 border border-slate-200 bg-white px-2 py-2 text-xs">
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-medium text-slate-700">
-          {task.label}
-        </span>
+    <label
+      className={cn(
+        "grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 border px-2 py-2 text-xs transition",
+        isComplete
+          ? "border-slate-200 bg-slate-50 text-slate-400"
+          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50",
+        disabled && "cursor-not-allowed opacity-60",
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={isComplete}
+        disabled={disabled}
+        onChange={(event) =>
+          onStateChange(event.target.checked ? "Complete" : "Not Started")
+        }
+        className="h-4 w-4 shrink-0 accent-emerald-600"
+        aria-label={`${task.label} complete`}
+      />
+      <div
+        className={cn(
+          "min-w-0 whitespace-normal break-words font-medium leading-5",
+          isComplete && "text-slate-400 line-through",
+        )}
+      >
+        <span>{task.label}</span>
+        {task.requirements?.length ? (
+          <ul className="mt-1 space-y-0.5 text-[11px] font-normal leading-4 text-slate-500">
+            {task.requirements.map((requirement) => (
+              <li key={requirement} className="flex gap-1.5">
+                <span aria-hidden="true">-</span>
+                <span>{requirement}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+      <span className="min-w-fit max-w-[104px] shrink-0 text-right leading-5">
         {saving ? (
           <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-red-600" />
+        ) : isComplete ? (
+          <span className="font-semibold text-slate-400">Done</span>
         ) : (
           <span
-            className={cn("shrink-0 font-semibold", taskStateTone(task.state))}
+            className={cn(
+              "block whitespace-normal break-words font-semibold",
+              taskStateTone(task.state),
+            )}
           >
             {task.state}
           </span>
         )}
-      </div>
-      <select
-        aria-label={`${task.label} checklist status`}
-        value={task.state}
-        disabled={disabled}
-        onChange={(event) => onStateChange(event.target.value as TaskState)}
-        className="h-8 w-full border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 outline-none transition focus:border-gray-950 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {taskStates.map((state) => (
-          <option key={state} value={state}>
-            {state}
-          </option>
-        ))}
-      </select>
-    </div>
+      </span>
+    </label>
   );
 }
 
@@ -4125,11 +5147,13 @@ function CrWhiteboard({
   crs,
   loading,
   selectedId,
+  peopleOptions,
   onSelect,
 }: {
   crs: Cr[];
   loading: boolean;
   selectedId: CrId | null;
+  peopleOptions: string[];
   onSelect: (id: CrId) => void;
 }) {
   const savedPositions = useQuery(api.crs.listWhiteboardPositions, {});
@@ -4151,9 +5175,8 @@ function CrWhiteboard({
     {},
   );
   const [error, setError] = useState("");
-  const [collapsedSelectedId, setCollapsedSelectedId] = useState<CrId | null>(
-    null,
-  );
+  const [quickViewCr, setQuickViewCr] = useState<Cr | null>(null);
+  const closeQuickView = useCallback(() => setQuickViewCr(null), []);
 
   const savedPositionByCrId = useMemo(() => {
     const next: Partial<Record<CrId, WhiteboardPosition>> = {};
@@ -4208,7 +5231,6 @@ function CrWhiteboard({
     event: React.PointerEvent<HTMLDivElement>,
     crId: CrId,
     position: WhiteboardPosition,
-    expanded: boolean,
   ) {
     if (event.button !== 0) {
       return;
@@ -4225,7 +5247,6 @@ function CrWhiteboard({
       currentX: position.x,
       currentY: position.y,
       moved: false,
-      expanded,
     };
 
     function handlePointerMove(pointerEvent: PointerEvent) {
@@ -4252,7 +5273,6 @@ function CrWhiteboard({
           y: dragState.startY + deltaY,
         },
         boardSize,
-        dragState.expanded,
       );
       dragState.currentX = nextPosition.x;
       dragState.currentY = nextPosition.y;
@@ -4291,14 +5311,9 @@ function CrWhiteboard({
     window.addEventListener("pointercancel", handlePointerUp);
   }
 
-  function handleNoteToggle(crId: CrId) {
-    if (selectedId === crId && collapsedSelectedId !== crId) {
-      setCollapsedSelectedId(crId);
-      return;
-    }
-
-    setCollapsedSelectedId(null);
-    onSelect(crId);
+  function openQuickView(cr: Cr) {
+    onSelect(cr._id);
+    setQuickViewCr(cr);
   }
 
   return (
@@ -4397,33 +5412,33 @@ function CrWhiteboard({
             }}
           >
             {placedCrs.map(({ cr, position }) => {
-              const expanded =
-                selectedId === cr._id && collapsedSelectedId !== cr._id;
               const saving = savingIds[cr._id];
               return (
                 <div
                   key={cr._id}
                   role="button"
                   tabIndex={0}
-                  aria-pressed={expanded}
+                  aria-haspopup="dialog"
+                  aria-label={`Open details for ${cr.crNumber}`}
                   onPointerDown={(event) =>
-                    handlePointerDown(event, cr._id, position, expanded)
+                    handlePointerDown(event, cr._id, position)
                   }
-                  onDoubleClick={() => handleNoteToggle(cr._id)}
+                  onDoubleClick={() => openQuickView(cr)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      handleNoteToggle(cr._id);
+                      openQuickView(cr);
                     }
                   }}
                   className={cn(
-                    "absolute left-0 top-0 touch-none select-none border p-3 text-left shadow-sm outline-none transition-[box-shadow,width] duration-150 hover:shadow-md focus-visible:ring-2 focus-visible:ring-gray-950",
+                    "absolute left-0 top-0 z-10 w-[232px] touch-none select-none border p-3 text-left shadow-sm outline-none transition-shadow duration-150 hover:shadow-md focus-visible:ring-2 focus-visible:ring-gray-950",
                     stickyNoteTone[cr.priority],
-                    expanded ? "z-20 w-[344px] shadow-lg" : "z-10 w-[232px]",
+                    selectedId === cr._id && "shadow-lg ring-2 ring-gray-950/30",
                   )}
                   style={{
                     transform: `translate(${position.x}px, ${position.y}px)`,
                   }}
+                  title="Double-click to open CR details"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -4469,52 +5484,9 @@ function CrWhiteboard({
                     </span>
                   </div>
 
-                  {expanded ? (
-                    <div className="mt-3 space-y-3 border-t border-black/10 pt-3 text-xs leading-5">
-                      <div className="grid grid-cols-2 gap-2">
-                        <NoteFact
-                          label="Board"
-                          value={cr.eccBoard ?? "Other"}
-                        />
-                        <NoteFact
-                          label="Class"
-                          value={cr.classification ?? "TBD"}
-                        />
-                        <NoteFact
-                          label="NCDOC"
-                          value={cr.ncdocNumber ?? "Not set"}
-                        />
-                        <NoteFact
-                          label="Disposition"
-                          value={cr.disposition ?? "Not set"}
-                        />
-                      </div>
-                      <div>
-                        <p className={sectionLabel}>Description</p>
-                        <p className="mt-1 line-clamp-4">{cr.description}</p>
-                      </div>
-                      <div>
-                        <p className={sectionLabel}>Impact</p>
-                        <p className="mt-1 line-clamp-3">{cr.businessImpact}</p>
-                      </div>
-                      {cr.tags.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {cr.tags.slice(0, 5).map((tag) => (
-                            <span
-                              key={tag}
-                              className="border border-black/10 bg-white/60 px-1.5 py-0.5"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <p className="mt-3 line-clamp-2 text-xs leading-5 opacity-80">
-                      {cr.description}
-                    </p>
-                  )}
+                  <p className="mt-3 line-clamp-2 text-xs leading-5 opacity-80">
+                    {cr.description}
+                  </p>
                 </div>
               );
             })}
@@ -4527,20 +5499,24 @@ function CrWhiteboard({
           {error}
         </p>
       ) : null}
+      <CrQuickViewDialog
+        cr={quickViewCr}
+        peopleOptions={peopleOptions}
+        onClose={closeQuickView}
+      />
     </section>
   );
 }
 
-function NoteFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="border border-black/10 bg-white/50 p-2">
-      <p className={sectionLabel}>{label}</p>
-      <p className="mt-1 truncate font-medium">{value}</p>
-    </div>
-  );
-}
-
-function CrDetails({ cr }: { cr: Cr | null }) {
+function CrDetails({
+  cr,
+  peopleOptions = [],
+  onClose,
+}: {
+  cr: Cr | null;
+  peopleOptions?: string[];
+  onClose?: () => void;
+}) {
   const updateCr = useMutation(api.crs.update);
   const addUpdate = useMutation(api.crs.addUpdate);
   const archiveCr = useMutation(api.crs.archive);
@@ -4669,6 +5645,12 @@ function CrDetails({ cr }: { cr: Cr | null }) {
               <Archive className="h-4 w-4" />
               Archive
             </Button>
+            {onClose ? (
+              <Button variant="outline" size="sm" onClick={onClose}>
+                <X className="h-4 w-4" />
+                Close
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -4682,91 +5664,10 @@ function CrDetails({ cr }: { cr: Cr | null }) {
             saving={saving}
             submitLabel="Save changes"
             onSubmit={handleSave}
+            peopleOptions={peopleOptions}
           />
         ) : (
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <Info
-                label="ECC Coordinator"
-                value={cr.eccCoordinator || cr.owner || "Not set"}
-              />
-              <Info
-                label="Responsible IPT(s)"
-                value={(cr.responsibleIpts ?? []).join(", ") || "Not set"}
-              />
-              <Info label="Requester" value={cr.requester} />
-              <Info
-                label="Meeting"
-                value={
-                  [cr.meetingDate, cr.meetingTimeEst]
-                    .filter(Boolean)
-                    .join(" ") || "No date"
-                }
-              />
-              <Info label="NCDOC Number" value={cr.ncdocNumber ?? "Not set"} />
-              <Info
-                label="Documentation Due"
-                value={cr.documentationDeadline ?? "No date"}
-              />
-              <Info
-                label="CO Need-by / Completion"
-                value={cr.targetDate ?? "No date"}
-              />
-              <Info
-                label="Risk"
-                value={cr.risk}
-                valueClassName={riskTone[cr.risk]}
-              />
-              <Info
-                label="Charge Number"
-                value={cr.wbsChargeNumber ?? "Not set"}
-              />
-              <Info label="FAR15?" value={cr.far15 ? "Yes" : "No"} />
-              <Info label="Disposition" value={cr.disposition ?? "Not set"} />
-              <Info label="Supplier" value={cr.supplier ?? "Not set"} />
-              <Info
-                label="Engine Program(s)"
-                value={(cr.enginePrograms ?? []).join(", ") || "Not set"}
-              />
-              <Info
-                label="Component Model(s)"
-                value={(cr.componentModels ?? []).join(", ") || "Not set"}
-              />
-              <Info
-                label="Class/Gate/Military Supplier EC"
-                value={cr.classGateMilitarySupplierEc ?? "Not set"}
-              />
-            </div>
-            <WorkflowSummary cr={cr} />
-            <TextBlock label="Description" value={cr.description} />
-            <TextBlock label="Business Impact" value={cr.businessImpact} />
-            <TextBlock label="Technical Notes" value={cr.technicalNotes} />
-            <TextBlock
-              label="CR Folder Path"
-              value={cr.crFolderPath ?? "Not set"}
-            />
-            <TextBlock
-              label="Quorum / Approvers"
-              value={(cr.quorum ?? []).join(", ") || "Not set"}
-            />
-            <div>
-              <p className={cn("mb-2", sectionLabel)}>Tags</p>
-              <div className="flex flex-wrap gap-2">
-                {cr.tags.length > 0 ? (
-                  cr.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600"
-                    >
-                      {tag}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-sm text-slate-500">No tags</span>
-                )}
-              </div>
-            </div>
-          </div>
+          <CrReadOnlyDetails cr={cr} />
         )}
 
         <div className="mt-6 border-t border-slate-200 pt-4">
@@ -4775,6 +5676,7 @@ function CrDetails({ cr }: { cr: Cr | null }) {
             actions={actions ?? []}
             approvals={approvals ?? []}
             loading={!actions || !approvals}
+            peopleOptions={peopleOptions}
             addAction={addAction}
             updateActionStatus={updateActionStatus}
             addApproval={addApproval}
@@ -4829,6 +5731,299 @@ function CrDetails({ cr }: { cr: Cr | null }) {
   );
 }
 
+function CrReadOnlyDetails({ cr }: { cr: Cr }) {
+  const meeting =
+    [cr.meetingDate, cr.meetingTimeEst].filter(Boolean).join(" ") || "No date";
+  const targetDate = cr.targetDate
+    ? `${cr.targetDate} (${dueLabel(cr)})`
+    : "No target";
+  const currentPhase = getWorkflowCurrentPhase(cr);
+
+  return (
+    <div className="space-y-5">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <DetailStat
+          icon={CircleDot}
+          label="Status"
+          value={<Badge className={statusTone[cr.status]}>{cr.status}</Badge>}
+          detail={`Workflow phase: ${currentPhase}`}
+        />
+        <DetailStat
+          icon={UserRound}
+          label="Owner"
+          value={displayDetailValue(cr.owner, "Unassigned")}
+          detail={`Coordinator: ${displayDetailValue(
+            cr.eccCoordinator,
+            "Unassigned",
+          )}`}
+        />
+        <DetailStat
+          icon={CalendarClock}
+          label="Need-by"
+          value={targetDate}
+          detail={`Meeting: ${meeting}`}
+        />
+        <DetailStat
+          icon={AlertTriangle}
+          label="Risk"
+          value={cr.risk}
+          detail={`${cr.priority} priority`}
+          valueClassName={riskTone[cr.risk]}
+        />
+      </section>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <DetailSection title="Change Summary">
+          <div className="space-y-4">
+            <DetailParagraph
+              label="Description"
+              value={displayDetailValue(cr.description, "Not specified.")}
+            />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <DetailParagraph
+                label="Business Impact"
+                value={displayDetailValue(cr.businessImpact, "Not specified.")}
+              />
+              <DetailParagraph
+                label="Technical Notes"
+                value={displayDetailValue(cr.technicalNotes, "Not specified.")}
+              />
+            </div>
+          </div>
+        </DetailSection>
+
+        <div className="space-y-5">
+          <DetailSection title="Ownership">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <DetailField
+                label="ECC Coordinator"
+                value={displayDetailValue(cr.eccCoordinator, "Unassigned")}
+              />
+              <DetailField
+                label="Owner"
+                value={displayDetailValue(cr.owner, "Unassigned")}
+              />
+              <DetailField
+                label="Requester"
+                value={displayDetailValue(cr.requester, "Unknown")}
+              />
+              <DetailField
+                label="Responsible IPT(s)"
+                value={formatDetailList(cr.responsibleIpts)}
+              />
+            </div>
+          </DetailSection>
+
+          <DetailSection title="Schedule">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <DetailField label="Meeting" value={meeting} />
+              <DetailField
+                label="Documentation Due"
+                value={cr.documentationDeadline ?? "No date"}
+              />
+              <DetailField label="CO Need-by" value={targetDate} />
+              <DetailField label="Submitted" value={cr.submittedDate} />
+            </div>
+          </DetailSection>
+        </div>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <DetailSection title="Program And Classification">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <DetailField label="System" value={cr.system} />
+            <DetailField label="Category" value={cr.category} />
+            <DetailField label="ECC Board" value={cr.eccBoard ?? "Other"} />
+            <DetailField
+              label="Classification"
+              value={cr.classification ?? "TBD"}
+            />
+            <DetailField label="Current Gate" value={cr.currentGate ?? "None"} />
+            <DetailField
+              label="Class/Gate/Military Supplier EC"
+              value={cr.classGateMilitarySupplierEc ?? "Not set"}
+            />
+            <DetailField
+              label="Engine Program(s)"
+              value={formatDetailList(cr.enginePrograms)}
+            />
+            <DetailField
+              label="Component Model(s)"
+              value={formatDetailList(cr.componentModels)}
+            />
+          </div>
+        </DetailSection>
+
+        <DetailSection title="Records And Charging">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <DetailField
+              label="NCDOC Number"
+              value={cr.ncdocNumber ?? "Not set"}
+            />
+            <DetailField label="Supplier" value={cr.supplier ?? "Not set"} />
+            <DetailField label="FAR15" value={cr.far15 ? "Yes" : "No"} />
+            <DetailField
+              label="Disposition"
+              value={cr.disposition ?? "Not set"}
+            />
+            <DetailField
+              label="Charge Number"
+              value={cr.wbsChargeNumber ?? "Not set"}
+            />
+            <DetailField
+              label="Charge Active"
+              value={cr.chargeNumberActive ? "Yes" : "No"}
+            />
+            <DetailField
+              label="Design Authority"
+              value={cr.designAuthority || "Not set"}
+            />
+            <DetailField
+              label="Waiver Option"
+              value={cr.waiverOption ?? "Not applicable"}
+            />
+          </div>
+        </DetailSection>
+      </div>
+
+      <WorkflowSummary cr={cr} />
+
+      <DetailSection title="Files, Approvers, And Tags">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
+          <div className="space-y-4">
+            <DetailField
+              label="CR Folder Path"
+              value={cr.crFolderPath ?? "Not set"}
+            />
+            <DetailField
+              label="Quorum / Approvers"
+              value={formatDetailList(cr.quorum)}
+            />
+          </div>
+          <div>
+            <p className={sectionLabel}>Tags</p>
+            <DetailTags tags={cr.tags} />
+          </div>
+        </div>
+      </DetailSection>
+    </div>
+  );
+}
+
+function DetailStat({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  valueClassName,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: ReactNode;
+  detail: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="min-w-0 border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-3 flex items-center gap-2 text-slate-500">
+        <Icon className="h-4 w-4 shrink-0" />
+        <p className={sectionLabel}>{label}</p>
+      </div>
+      <div
+        className={cn(
+          "min-w-0 truncate text-base font-semibold text-slate-950",
+          valueClassName,
+        )}
+      >
+        {value}
+      </div>
+      <p className="mt-1 truncate text-xs text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
+function DetailSection({
+  title,
+  children,
+  className,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("border border-slate-200 bg-white", className)}>
+      <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
+        <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+      </div>
+      <div className="p-3">{children}</div>
+    </section>
+  );
+}
+
+function DetailField({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className={sectionLabel}>{label}</p>
+      <div
+        className={cn(
+          "mt-1 break-words text-sm font-medium leading-5 text-slate-900",
+          valueClassName,
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function DetailParagraph({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className={sectionLabel}>{label}</p>
+      <p className="mt-1 whitespace-pre-wrap break-words border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-800">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function DetailTags({ tags }: { tags: string[] }) {
+  if (tags.length === 0) {
+    return <p className="mt-1 text-sm text-slate-500">No tags</p>;
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600"
+        >
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function displayDetailValue(value: string | null | undefined, fallback: string) {
+  const trimmed = value?.trim();
+  return trimmed || fallback;
+}
+
+function formatDetailList(value: string[] | undefined) {
+  return value && value.length > 0 ? value.join(", ") : "Not set";
+}
+
 function WorkflowSummary({ cr }: { cr: Cr }) {
   const milestones: Array<[string, TaskState]> = [
     ["Doc Notify", cr.documentationNotificationStatus ?? "Not Started"],
@@ -4840,38 +6035,65 @@ function WorkflowSummary({ cr }: { cr: Cr }) {
     ["OOC", cr.oocApprovalStatus ?? "Not Started"],
     ["Chair", cr.chairApprovalStatus ?? "Not Started"],
     ["Closure", cr.closureNotificationStatus ?? "Not Started"],
-    ["CM List", cr.cmWorkingListStatus ?? "Not Started"],
   ];
+  if (!isMilitarySupplierEccCr(cr)) {
+    milestones.push(["CM List", cr.cmWorkingListStatus ?? "Not Started"]);
+  }
+  const resolvedCount = milestones.filter(
+    ([, state]) => state === "Complete" || state === "Not Applicable",
+  ).length;
+  const blockedCount = milestones.filter(([, state]) => state === "Blocked")
+    .length;
 
   return (
-    <div>
-      <p className={cn("mb-2", sectionLabel)}>ECC Workflow</p>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-        {milestones.map(([label, state]) => (
-          <div
-            key={label}
-            className="rounded-md border border-slate-200 bg-slate-50 p-2"
-          >
-            <p className={sectionLabel}>{label}</p>
-            <p className={cn("mt-1 text-xs font-medium", taskStateTone(state))}>
-              {state}
-            </p>
-          </div>
-        ))}
+    <DetailSection title="ECC Workflow">
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <span className="border border-emerald-200 bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">
+          {resolvedCount}/{milestones.length} complete
+        </span>
+        {blockedCount > 0 ? (
+          <span className="border border-rose-200 bg-rose-50 px-2 py-1 font-semibold text-rose-700">
+            {blockedCount} blocked
+          </span>
+        ) : null}
+        <span className="border border-slate-200 bg-slate-50 px-2 py-1 font-medium text-slate-600">
+          Updated {formatTimestamp(cr.lastUpdatedAt)}
+        </span>
       </div>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Info label="Charge Number" value={cr.wbsChargeNumber ?? "Not set"} />
-        <Info
-          label="Design Authority Group"
-          value={cr.designAuthority ?? "Not set"}
-        />
-        <Info
-          label="Waiver Option"
-          value={cr.waiverOption ?? "Not applicable"}
-        />
-        <Info label="Updated" value={formatTimestamp(cr.lastUpdatedAt)} />
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        {milestones.map(([label, state]) => {
+          const Icon =
+            state === "Complete" || state === "Not Applicable"
+              ? CheckCircle2
+              : state === "Blocked"
+                ? AlertTriangle
+                : CircleDot;
+
+          return (
+            <div
+              key={label}
+              className="flex min-w-0 items-start gap-2 border border-slate-200 bg-slate-50 p-2"
+            >
+              <Icon
+                aria-hidden="true"
+                className={cn("mt-0.5 h-4 w-4 shrink-0", taskStateTone(state))}
+              />
+              <div className="min-w-0">
+                <p className={sectionLabel}>{label}</p>
+                <p
+                  className={cn(
+                    "mt-1 text-xs font-semibold",
+                    taskStateTone(state),
+                  )}
+                >
+                  {state}
+                </p>
+              </div>
+            </div>
+          );
+        })}
       </div>
-    </div>
+    </DetailSection>
   );
 }
 
@@ -4880,23 +6102,28 @@ function buildWorkflowPhases(cr: Cr): WorkflowPhase[] {
   const blockedIndex = getBlockedWorkflowPhaseIndex(cr, currentIndex);
 
   return workflowPhaseDefinitions.map((definition, index) => {
-    const tasks = definition.tasks.map((task) => ({
+    const tasks = getWorkflowDefinitionTasks(definition, cr).map((task) => ({
       label: task.label,
       field: task.field,
+      requirements: task.requirements,
       state: getWorkflowTaskState(cr, task.field),
     }));
     const blocked =
       (cr.status === "Blocked" && index === currentIndex) ||
       blockedIndex === index ||
       tasks.some((task) => task.state === "Blocked");
+    const complete =
+      tasks.length > 0
+        ? tasks.every(isChecklistTaskComplete)
+        : index < currentIndex;
     let state: WorkflowPhaseState = "pending";
 
-    if (blocked) {
+    if (blocked || (cr.status === "Rejected" && index === currentIndex)) {
       state = "blocked";
-    } else if (index < currentIndex || cr.status === "Closed") {
+    } else if (complete) {
       state = "complete";
     } else if (index === currentIndex) {
-      state = cr.status === "Rejected" ? "blocked" : "active";
+      state = "active";
     }
 
     return {
@@ -4923,7 +6150,7 @@ function getBlockedWorkflowPhaseIndex(cr: Cr, currentIndex: number) {
   for (let index = 0; index < workflowPhaseDefinitions.length; index += 1) {
     const definition = workflowPhaseDefinitions[index];
     if (
-      definition.tasks.some(
+      getWorkflowDefinitionTasks(definition, cr).some(
         (task) => getWorkflowTaskState(cr, task.field) === "Blocked",
       )
     ) {
@@ -4932,6 +6159,60 @@ function getBlockedWorkflowPhaseIndex(cr: Cr, currentIndex: number) {
   }
 
   return cr.status === "Blocked" ? currentIndex : null;
+}
+
+function getWorkflowDefinitionTasks(
+  definition: (typeof workflowPhaseDefinitions)[number],
+  cr: Cr,
+): WorkflowDefinitionTask[] {
+  if (!isMilitarySupplierEccCr(cr)) {
+    return definition.tasks;
+  }
+
+  if (definition.id === "records") {
+    return [
+      {
+        label: "NCDOC",
+        field: "ncdocStatus",
+        requirements: msEccNcdocRequirements,
+      },
+      {
+        label: "xClass",
+        field: "xclassStatus",
+      },
+      {
+        label: "Inform IPTs",
+        field: "closureNotificationStatus",
+      },
+    ];
+  }
+
+  if (definition.id === "closure") {
+    return cr.status === "Closed" || cr.status === "Rejected"
+      ? definition.tasks
+      : [];
+  }
+
+  return definition.tasks.filter((task) => task.field !== "cmWorkingListStatus");
+}
+
+function isMilitarySupplierEccCr(cr: Cr) {
+  const values = [
+    cr.title,
+    cr.category,
+    cr.system,
+    cr.eccBoard ?? "",
+    cr.classGateMilitarySupplierEc ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    values.includes("ms ecc") ||
+    values.includes("military supplier ecc") ||
+    values.includes("pwes military ecc") ||
+    values.includes("pwes military")
+  );
 }
 
 function getWorkflowTaskState(cr: Cr, field: TaskStateField): TaskState {
@@ -4996,6 +6277,7 @@ function ActionsApprovalsPanel({
   actions,
   approvals,
   loading,
+  peopleOptions,
   addAction,
   updateActionStatus,
   addApproval,
@@ -5006,6 +6288,7 @@ function ActionsApprovalsPanel({
   actions: CrAction[];
   approvals: CrApproval[];
   loading: boolean;
+  peopleOptions: string[];
   addAction: ReturnType<typeof useMutation<typeof api.crs.addAction>>;
   updateActionStatus: ReturnType<
     typeof useMutation<typeof api.crs.updateActionStatus>
@@ -5162,12 +6445,13 @@ function ActionsApprovalsPanel({
                   setActionForm({ ...actionForm, gate: value as ReviewGate })
                 }
               />
-              <Field
+              <PersonField
                 label="Owner"
                 value={actionForm.owner}
                 onChange={(value) =>
                   setActionForm({ ...actionForm, owner: value })
                 }
+                peopleOptions={peopleOptions}
               />
             </div>
             <Field
@@ -5272,12 +6556,13 @@ function ActionsApprovalsPanel({
                   })
                 }
               />
-              <Field
+              <PersonField
                 label="Approver"
                 value={approvalForm.approverName}
                 onChange={(value) =>
                   setApprovalForm({ ...approvalForm, approverName: value })
                 }
+                peopleOptions={peopleOptions}
               />
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -5364,28 +6649,58 @@ function ActionsApprovalsPanel({
 }
 
 function AssistantPanel({
+  variant,
   selectedCr,
+  localOwner,
+  signedInName,
+  signedInEmail,
   onClose,
+  onDock,
+  onExpand,
 }: {
+  variant: "rail" | "full";
   selectedCr: Cr | null;
+  localOwner: string;
+  signedInName: string;
+  signedInEmail: string | null;
   onClose: () => void;
+  onDock: () => void;
+  onExpand: () => void;
 }) {
   const assistantFileInputRef = useRef<HTMLInputElement>(null);
+  const assistantTextAreaRef = useRef<HTMLTextAreaElement>(null);
+  const assistantMessagesScrollerRef = useRef<HTMLDivElement>(null);
+  const assistantMessagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<EccSpeechRecognition | null>(null);
-  const [messages, setMessages] = useState<AssistantMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "Ready to triage blockers, due dates, ownership load, or risk across the Collins Aerospace CR queue.",
-    },
-  ]);
+  const localVoiceSessionRef = useRef<LocalVoiceSession | null>(null);
+  const [messages, setMessages] = useState<AssistantMessage[]>(
+    getDefaultAssistantMessages,
+  );
+  const messagesRef = useRef(messages);
+  const [chatSessions, setChatSessions] = useState<AssistantChatSession[]>([]);
+  const chatSessionsRef = useRef<AssistantChatSession[]>([]);
+  const [activeChatId, setActiveChatId] = useState("");
+  const activeChatIdRef = useRef("");
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [input, setInput] = useState("");
   const [attachment, setAttachment] = useState<IntakeImageState | null>(null);
   const [attachmentError, setAttachmentError] = useState("");
-  const [isListening, setIsListening] = useState(false);
-  const [talkBackEnabled, setTalkBackEnabled] = useState(false);
+  const [voiceInputMode, setVoiceInputMode] = useState<
+    "idle" | "dictation" | "voice"
+  >("idle");
+  const [voiceChatActive, setVoiceChatActive] = useState(false);
+  const voiceChatActiveRef = useRef(false);
+  const voiceRestartTimerRef = useRef<number | null>(null);
+  const voiceSubmitTimerRef = useRef<number | null>(null);
+  const voicePromptBufferRef = useRef("");
+  const voicePromptSubmittingRef = useRef(false);
+  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("");
   const [asking, setAsking] = useState(false);
+  const isDictating = voiceInputMode === "dictation";
+  const isVoiceListening = voiceInputMode === "voice";
+  const isVoiceActive = voiceChatActive || isVoiceListening || isVoiceSpeaking;
+  const canSendMessage = Boolean(input.trim() || attachment);
   const voiceSupported = useSyncExternalStore(
     subscribeToStaticStore,
     getVoiceSupportSnapshot,
@@ -5393,33 +6708,257 @@ function AssistantPanel({
   );
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  function scrollAssistantMessagesToBottom() {
+    const scroller = assistantMessagesScrollerRef.current;
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+      return;
+    }
+
+    assistantMessagesEndRef.current?.scrollIntoView({ block: "end" });
+  }
+
+  useLayoutEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      scrollAssistantMessagesToBottom();
+    });
+    const timer = window.setTimeout(scrollAssistantMessagesToBottom, 80);
+
     return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [activeChatId, asking, messages]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (chatSessionsRef.current.length > 0) {
+        return;
+      }
+
+      const storedSessions = readAssistantChatSessions();
+      const initialSessions =
+        storedSessions.length > 0
+          ? storedSessions
+          : [createAssistantChatSession()];
+      const initialSession = initialSessions[0];
+
+      chatSessionsRef.current = initialSessions;
+      setChatSessions(initialSessions);
+      activeChatIdRef.current = initialSession.id;
+      setActiveChatId(initialSession.id);
+      messagesRef.current = initialSession.messages;
+      setMessages(initialSession.messages);
+
+      if (storedSessions.length === 0) {
+        writeAssistantChatSessions(initialSessions);
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const textArea = assistantTextAreaRef.current;
+    if (!textArea) {
+      return;
+    }
+
+    textArea.style.height = "auto";
+    textArea.style.height = `${Math.min(textArea.scrollHeight, 128)}px`;
+    textArea.style.overflowY = textArea.scrollHeight > 128 ? "auto" : "hidden";
+  }, [input]);
+
+  function clearVoiceRestartTimer() {
+    if (voiceRestartTimerRef.current === null) {
+      return;
+    }
+
+    window.clearTimeout(voiceRestartTimerRef.current);
+    voiceRestartTimerRef.current = null;
+  }
+
+  function clearVoiceSubmitTimer() {
+    if (voiceSubmitTimerRef.current === null) {
+      return;
+    }
+
+    window.clearTimeout(voiceSubmitTimerRef.current);
+    voiceSubmitTimerRef.current = null;
+  }
+
+  function stopLocalVoiceSession(cancelled: boolean, updateUi = true) {
+    const session = localVoiceSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    session.cancelled = cancelled;
+    localVoiceSessionRef.current = null;
+    if (updateUi) {
+      setVoiceInputMode("idle");
+    }
+    session.processor.disconnect();
+    session.outputGain.disconnect();
+    session.source.disconnect();
+    stopMediaStream(session.stream);
+    void session.audioContext.close().catch(() => {});
+  }
+
+  useEffect(() => {
+    return () => {
+      voiceChatActiveRef.current = false;
+      clearVoiceRestartTimer();
+      clearVoiceSubmitTimer();
+      stopLocalVoiceSession(true, false);
       recognitionRef.current?.abort();
-      window.speechSynthesis?.cancel();
+      stopSpokenAudio();
     };
   }, []);
 
-  async function ask(content: string, image = attachment) {
+  function replaceChatSessions(nextSessions: AssistantChatSession[]) {
+    const normalizedSessions = normalizeAssistantChatSessions(nextSessions);
+    chatSessionsRef.current = normalizedSessions;
+    setChatSessions(normalizedSessions);
+    writeAssistantChatSessions(normalizedSessions);
+  }
+
+  function commitMessages(nextMessages: AssistantMessage[]) {
+    const normalizedMessages = normalizeAssistantMessages(nextMessages);
+    const currentChatId = activeChatIdRef.current;
+    const nextSession = buildAssistantChatSessionUpdate(
+      chatSessionsRef.current,
+      currentChatId,
+      normalizedMessages,
+    );
+    const nextSessions = [
+      nextSession,
+      ...chatSessionsRef.current.filter(
+        (session) => session.id !== nextSession.id,
+      ),
+    ].slice(0, assistantMaxStoredChats);
+
+    activeChatIdRef.current = nextSession.id;
+    setActiveChatId(nextSession.id);
+    messagesRef.current = normalizedMessages;
+    setMessages(normalizedMessages);
+    replaceChatSessions(nextSessions);
+  }
+
+  function handleNewChat() {
+    if (asking) {
+      return;
+    }
+
+    if (isVoiceActive) {
+      stopVoiceChat("");
+    }
+
+    const nextSession = createAssistantChatSession();
+    const nextSessions = [nextSession, ...chatSessionsRef.current].slice(
+      0,
+      assistantMaxStoredChats,
+    );
+    activeChatIdRef.current = nextSession.id;
+    setActiveChatId(nextSession.id);
+    messagesRef.current = nextSession.messages;
+    setMessages(nextSession.messages);
+    setInput("");
+    setAttachment(null);
+    setAttachmentError("");
+    setVoiceStatus("");
+    setHistoryOpen(false);
+    replaceChatSessions(nextSessions);
+  }
+
+  function handleSelectChat(chatId: string) {
+    if (asking) {
+      return;
+    }
+
+    const session = chatSessionsRef.current.find((chat) => chat.id === chatId);
+    if (!session) {
+      return;
+    }
+
+    if (isVoiceActive) {
+      stopVoiceChat("");
+    }
+
+    activeChatIdRef.current = session.id;
+    setActiveChatId(session.id);
+    messagesRef.current = session.messages;
+    setMessages(session.messages);
+    setInput("");
+    setAttachment(null);
+    setAttachmentError("");
+    setVoiceStatus("");
+    setHistoryOpen(false);
+  }
+
+  function handleDeleteChat(chatId: string) {
+    if (asking) {
+      return;
+    }
+
+    const remainingSessions = chatSessionsRef.current.filter(
+      (session) => session.id !== chatId,
+    );
+    const nextSessions =
+      remainingSessions.length > 0
+        ? remainingSessions
+        : [createAssistantChatSession()];
+    replaceChatSessions(nextSessions);
+
+    if (chatId !== activeChatIdRef.current) {
+      return;
+    }
+
+    if (isVoiceActive) {
+      stopVoiceChat("");
+    }
+
+    const nextSession = nextSessions[0];
+    activeChatIdRef.current = nextSession.id;
+    setActiveChatId(nextSession.id);
+    messagesRef.current = nextSession.messages;
+    setMessages(nextSession.messages);
+    setInput("");
+    setAttachment(null);
+    setAttachmentError("");
+    setVoiceStatus("");
+  }
+
+  async function ask(
+    content: string,
+    image = attachment,
+    options: { keepVoiceStatus?: boolean; mode?: "text" | "voice" } = {},
+  ) {
     const prompt =
       content.trim() ||
       (image
         ? "Read the attached screenshot and extract the PWES Military ECC CR intake details."
         : "");
     if (!prompt || asking) {
-      return;
+      return null;
     }
     const displayedPrompt = image
       ? `${prompt}\n\n[Screenshot attached]`
       : prompt;
     const nextMessages: AssistantMessage[] = [
-      ...messages,
+      ...messagesRef.current,
       { role: "user", content: displayedPrompt },
     ];
-    setMessages(nextMessages);
+    commitMessages(nextMessages);
     setInput("");
     setAttachment(null);
     setAttachmentError("");
-    setVoiceStatus("");
+    if (!options.keepVoiceStatus) {
+      setVoiceStatus("");
+    }
     setAsking(true);
     try {
       const response = await fetch("/api/assistant", {
@@ -5428,6 +6967,12 @@ function AssistantPanel({
         body: JSON.stringify({
           messages: nextMessages.slice(-10),
           selectedCrNumber: selectedCr?.crNumber ?? null,
+          currentUser: {
+            localOwner,
+            name: signedInName,
+            email: signedInEmail,
+          },
+          mode: options.mode ?? "text",
           image: image
             ? {
                 mimeType: image.mimeType,
@@ -5446,31 +6991,27 @@ function AssistantPanel({
       const answer =
         data.answer ??
         "The ECC assistant did not return a response. Please try again.";
-      setMessages((current) => [
-        ...current,
+      commitMessages([
+        ...messagesRef.current,
         {
           role: "assistant",
           content: answer,
         },
       ]);
-      if (talkBackEnabled) {
-        speakText(answer);
-      }
+      return answer;
     } catch (caught) {
       const answer =
         caught instanceof Error
           ? caught.message
           : "The ECC assistant could not answer.";
-      setMessages((current) => [
-        ...current,
+      commitMessages([
+        ...messagesRef.current,
         {
           role: "assistant",
           content: answer,
         },
       ]);
-      if (talkBackEnabled) {
-        speakText(answer);
-      }
+      return answer;
     } finally {
       setAsking(false);
     }
@@ -5481,10 +7022,89 @@ function AssistantPanel({
     void ask(input);
   }
 
+  function handleComposerKeyDown(
+    event: ReactKeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    if (canSendMessage && !asking && !isVoiceActive) {
+      void ask(input);
+    }
+  }
+
   function stopVoiceInput(status = "") {
+    clearVoiceRestartTimer();
+    clearVoiceSubmitTimer();
+    stopLocalVoiceSession(true);
     recognitionRef.current?.stop();
-    setIsListening(false);
+    recognitionRef.current = null;
+    setVoiceInputMode("idle");
     setVoiceStatus(status);
+  }
+
+  function stopVoiceChat(status = "Voice mode ended.") {
+    voiceChatActiveRef.current = false;
+    setVoiceChatActive(false);
+    clearVoiceRestartTimer();
+    clearVoiceSubmitTimer();
+    voicePromptBufferRef.current = "";
+    voicePromptSubmittingRef.current = false;
+    stopLocalVoiceSession(true);
+    stopSpokenAudio();
+    setIsVoiceSpeaking(false);
+    recognitionRef.current?.abort();
+    recognitionRef.current = null;
+    setVoiceInputMode("idle");
+    setVoiceStatus(status);
+  }
+
+  function scheduleVoiceRestart(status = "Voice mode listening...") {
+    if (!voiceChatActiveRef.current) {
+      return;
+    }
+
+    clearVoiceRestartTimer();
+    setVoiceStatus(status);
+    voiceRestartTimerRef.current = window.setTimeout(() => {
+      voiceRestartTimerRef.current = null;
+      if (
+        voiceChatActiveRef.current &&
+        !recognitionRef.current &&
+        !localVoiceSessionRef.current
+      ) {
+        startVoiceInput("voice");
+      }
+    }, 250);
+  }
+
+  function scheduleVoicePromptSubmit(delay = 1_100) {
+    if (!voiceChatActiveRef.current) {
+      return;
+    }
+
+    clearVoiceSubmitTimer();
+    setVoiceStatus("Voice mode listening...");
+    voiceSubmitTimerRef.current = window.setTimeout(() => {
+      voiceSubmitTimerRef.current = null;
+      const prompt = voicePromptBufferRef.current.trim();
+      if (!prompt || !voiceChatActiveRef.current) {
+        return;
+      }
+
+      voicePromptBufferRef.current = "";
+      voicePromptSubmittingRef.current = true;
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setVoiceInputMode("idle");
+      void handleVoicePrompt(prompt);
+    }, delay);
   }
 
   async function handleAssistantImageFile(file: File) {
@@ -5518,35 +7138,311 @@ function AssistantPanel({
     }
   }
 
-  function handleVoiceToggle() {
-    if (isListening) {
+  function handleDictationToggle() {
+    if (isDictating) {
       stopVoiceInput("Dictation stopped.");
+      return;
+    }
+
+    if (isVoiceActive) {
+      stopVoiceChat("");
+    }
+
+    void warmLocalStt();
+    startVoiceInput("dictation");
+  }
+
+  function handleVoiceChatToggle() {
+    if (isVoiceSpeaking) {
+      interruptVoiceReplyAndListen();
+      return;
+    }
+
+    if (isVoiceActive) {
+      stopVoiceChat();
+      return;
+    }
+
+    if (isDictating) {
+      stopVoiceInput("");
+    }
+
+    voiceChatActiveRef.current = true;
+    setVoiceChatActive(true);
+    void warmLocalStt();
+    void warmLocalTts();
+    startVoiceInput("voice");
+  }
+
+  function interruptVoiceReplyAndListen() {
+    if (!voiceChatActiveRef.current) {
+      return;
+    }
+
+    stopSpokenAudio();
+    setIsVoiceSpeaking(false);
+    voicePromptSubmittingRef.current = false;
+    setVoiceStatus("Voice mode listening...");
+    startVoiceInput("voice");
+  }
+
+  function startVoiceInput(mode: LocalVoiceMode) {
+    clearVoiceRestartTimer();
+    if (localVoiceSessionRef.current || recognitionRef.current) {
+      return;
+    }
+
+    void startLocalVoiceInput(mode).catch(() => {
+      startBrowserVoiceInput(mode);
+    });
+  }
+
+  async function startLocalVoiceInput(mode: LocalVoiceMode) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Local microphone capture is not available.");
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        autoGainControl: true,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    const AudioContextConstructor =
+      window.AudioContext ??
+      (window as Window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      stopMediaStream(stream);
+      throw new Error("Local audio processing is not available.");
+    }
+
+    const audioContext = new AudioContextConstructor();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume().catch(() => undefined);
+    }
+    const source = audioContext.createMediaStreamSource(stream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    const outputGain = audioContext.createGain();
+    outputGain.gain.value = 0;
+
+    const session: LocalVoiceSession = {
+      mode,
+      stream,
+      audioContext,
+      source,
+      processor,
+      outputGain,
+      sampleRate: audioContext.sampleRate,
+      processedSamples: 0,
+      speechStartedAt: null,
+      lastSpeechAt: 0,
+      noiseFloor: 0.008,
+      calibrationFrames: 0,
+      voicedFrames: 0,
+      preRollFrames: [],
+      speechFrames: [],
+      finalizing: false,
+      cancelled: false,
+    };
+
+    processor.onaudioprocess = (event) => {
+      handleLocalVoiceFrame(session, event.inputBuffer.getChannelData(0));
+    };
+    source.connect(processor);
+    processor.connect(outputGain);
+    outputGain.connect(audioContext.destination);
+    localVoiceSessionRef.current = session;
+    setVoiceInputMode(mode);
+    setVoiceStatus(
+      mode === "voice"
+        ? "Voice mode listening locally..."
+        : "Dictating locally...",
+    );
+  }
+
+  function handleLocalVoiceFrame(
+    session: LocalVoiceSession,
+    inputFrame: Float32Array,
+  ) {
+    if (session.cancelled || session.finalizing) {
+      return;
+    }
+
+    const frame = new Float32Array(inputFrame);
+    const now = (session.processedSamples / session.sampleRate) * 1000;
+    session.processedSamples += frame.length;
+    const rms = calculateRms(frame);
+
+    if (session.calibrationFrames < 10 && session.speechStartedAt === null) {
+      session.noiseFloor =
+        session.calibrationFrames === 0
+          ? rms
+          : session.noiseFloor * 0.82 + rms * 0.18;
+      session.calibrationFrames += 1;
+    }
+
+    const startThreshold = Math.max(0.018, session.noiseFloor * 3.2);
+    const continueThreshold = Math.max(0.012, session.noiseFloor * 2.1);
+    const isVoice = rms >= (session.speechStartedAt ? continueThreshold : startThreshold);
+
+    session.preRollFrames.push(frame);
+    trimAudioFrames(
+      session.preRollFrames,
+      Math.round(session.sampleRate * 0.35),
+    );
+
+    if (isVoice) {
+      session.voicedFrames += 1;
+      session.lastSpeechAt = now;
+    } else if (session.speechStartedAt === null) {
+      session.voicedFrames = 0;
+    }
+
+    if (session.speechStartedAt === null && session.voicedFrames >= 2) {
+      session.speechStartedAt = now;
+      session.speechFrames.push(...session.preRollFrames);
+      session.preRollFrames = [];
+    }
+
+    if (session.speechStartedAt !== null) {
+      session.speechFrames.push(frame);
+      trimAudioFrames(
+        session.speechFrames,
+        Math.round(session.sampleRate * 24),
+      );
+    }
+
+    const speechDuration = session.speechStartedAt
+      ? now - session.speechStartedAt
+      : 0;
+    const silenceDuration = session.lastSpeechAt ? now - session.lastSpeechAt : 0;
+    const shouldFinalize =
+      session.speechStartedAt !== null &&
+      ((speechDuration > 450 && silenceDuration > 1_350) ||
+        speechDuration > 18_000);
+
+    if (shouldFinalize) {
+      void finalizeLocalVoiceSession(session);
+    }
+  }
+
+  async function finalizeLocalVoiceSession(session: LocalVoiceSession) {
+    if (session.finalizing) {
+      return;
+    }
+
+    session.finalizing = true;
+    stopLocalVoiceSession(false);
+    const frames = session.speechFrames;
+    const audio = concatenateFloat32Frames(frames);
+    if (audio.length < session.sampleRate * 0.25 || session.cancelled) {
+      if (session.mode === "voice" && voiceChatActiveRef.current) {
+        scheduleVoiceRestart();
+      }
+      return;
+    }
+
+    try {
+      setVoiceStatus("Transcribing locally...");
+      const transcript = await transcribeLocalAudio(audio, session.sampleRate);
+      const cleanedTranscript = transcript.trim();
+      if (!cleanedTranscript) {
+        setVoiceStatus("Voice input did not catch that.");
+        if (session.mode === "voice" && voiceChatActiveRef.current) {
+          scheduleVoiceRestart();
+        }
+        return;
+      }
+
+      if (session.mode === "dictation") {
+        setInput(cleanedTranscript);
+        setVoiceStatus("Dictation ready.");
+        return;
+      }
+
+      if (!voiceChatActiveRef.current) {
+        return;
+      }
+
+      voicePromptSubmittingRef.current = true;
+      voicePromptBufferRef.current = "";
+      void handleVoicePrompt(cleanedTranscript);
+    } catch {
+      setVoiceStatus("Local transcription failed.");
+      if (session.mode === "voice" && voiceChatActiveRef.current) {
+        scheduleVoiceRestart();
+      }
+    }
+  }
+
+  function startBrowserVoiceInput(mode: LocalVoiceMode) {
+    clearVoiceRestartTimer();
+    if (mode === "voice" && recognitionRef.current) {
       return;
     }
 
     const SpeechRecognition = getSpeechRecognitionConstructor();
     if (!SpeechRecognition) {
       setVoiceStatus("Voice input is not available in this browser.");
+      if (mode === "voice") {
+        voiceChatActiveRef.current = false;
+        setVoiceChatActive(false);
+      }
       return;
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = mode === "voice";
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognitionRef.current = recognition;
 
     recognition.onstart = () => {
-      setIsListening(true);
-      setVoiceStatus("Listening...");
+      setVoiceInputMode(mode);
+      setVoiceStatus(mode === "voice" ? "Voice mode listening..." : "Dictating...");
     };
     recognition.onend = () => {
-      setIsListening(false);
       recognitionRef.current = null;
+      setVoiceInputMode("idle");
+      if (
+        mode === "voice" &&
+        voiceChatActiveRef.current &&
+        !voicePromptSubmittingRef.current
+      ) {
+        if (voicePromptBufferRef.current.trim()) {
+          scheduleVoicePromptSubmit(650);
+        }
+        scheduleVoiceRestart();
+      }
     };
     recognition.onerror = (event) => {
-      setIsListening(false);
       recognitionRef.current = null;
+      setVoiceInputMode("idle");
+      if (
+        mode === "voice" &&
+        !voiceChatActiveRef.current &&
+        event.error === "aborted"
+      ) {
+        return;
+      }
+
+      if (
+        mode === "voice" &&
+        voiceChatActiveRef.current &&
+        event.error === "no-speech"
+      ) {
+        scheduleVoiceRestart();
+        return;
+      }
+
+      if (mode === "voice") {
+        voiceChatActiveRef.current = false;
+        setVoiceChatActive(false);
+      }
       setVoiceStatus(
         event.error === "not-allowed"
           ? "Microphone access is blocked."
@@ -5571,14 +7467,31 @@ function AssistantPanel({
       }
 
       const transcript = (finalTranscript || interimTranscript).trim();
-      if (transcript) {
+      if (mode === "dictation" && transcript) {
         setInput(transcript);
       }
 
       const finalPrompt = finalTranscript.trim();
+      if (mode === "voice") {
+        if (transcript) {
+          setVoiceStatus("Voice mode listening...");
+        }
+        if (finalPrompt) {
+          voicePromptBufferRef.current = [
+            voicePromptBufferRef.current,
+            finalPrompt,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          scheduleVoicePromptSubmit();
+        }
+        return;
+      }
+
       if (finalPrompt) {
-        setVoiceStatus("Dictation ready.");
         recognition.stop();
+        setVoiceStatus("Dictation ready.");
       }
     };
 
@@ -5587,243 +7500,463 @@ function AssistantPanel({
     } catch {
       setVoiceStatus("Voice input could not start.");
       recognitionRef.current = null;
-      setIsListening(false);
+      setVoiceInputMode("idle");
+      if (mode === "voice") {
+        scheduleVoiceRestart();
+      }
     }
   }
 
-  function handleTalkBackToggle() {
-    setTalkBackEnabled((enabled) => {
-      const nextEnabled = !enabled;
-      if (!nextEnabled) {
-        window.speechSynthesis?.cancel();
-      }
-      return nextEnabled;
+  async function handleVoicePrompt(prompt: string) {
+    setVoiceStatus("Voice mode thinking...");
+    const answer = await ask(prompt, attachment, {
+      keepVoiceStatus: true,
+      mode: "voice",
     });
+    if (!voiceChatActiveRef.current) {
+      voicePromptSubmittingRef.current = false;
+      return;
+    }
+
+    if (answer) {
+      setVoiceStatus("Voice mode speaking...");
+      setIsVoiceSpeaking(true);
+      await speakText(answer);
+      setIsVoiceSpeaking(false);
+    }
+
+    voicePromptSubmittingRef.current = false;
+    if (voiceChatActiveRef.current) {
+      startVoiceInput("voice");
+    } else {
+      setVoiceStatus("Voice mode ended.");
+    }
   }
 
   const quickPrompts = [
     "Show blocked and high-risk CRs.",
     "What needs review today?",
-    "Summarize owner load and due-date risk.",
+    "Make a CR",
   ];
+  const isFullView = variant === "full";
 
   return (
-    <aside
+    <section
       id="assistant-panel"
       className={cn(
-        panelShell,
-        "flex max-h-[calc(100vh-112px)] min-h-[680px] flex-col overflow-hidden 2xl:sticky 2xl:top-5",
+        "flex min-h-0 flex-col overflow-hidden bg-white",
+        isFullView
+          ? "flex-1"
+          : "absolute inset-y-0 right-0 z-30 w-full max-w-[420px] border-l border-gray-200 shadow-xl xl:static xl:z-auto xl:h-full xl:w-[400px] xl:max-w-none xl:shadow-none",
       )}
     >
-      <div className="border-b border-slate-200 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-32 items-center justify-center border border-gray-200 bg-white px-3 py-2">
-              <Image
-                src="/collins-aerospace-logo.svg"
-                alt=""
-                width={116}
-                height={29}
-                className="h-auto max-h-6 w-full object-contain"
-              />
-            </span>
-            <div>
-              <p className={sectionLabel}>Collins AI</p>
-              <h2 className="text-base font-semibold text-slate-950">
-                ECC Assistant
-              </h2>
-              <p className="text-xs text-slate-500">
-                Engineering review intelligence
-              </p>
+      <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4">
+        <div className={cn("mx-auto w-full", isFullView && "max-w-4xl")}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center border border-gray-200 bg-white p-2">
+                <Image
+                  src="/favicon.svg"
+                  alt=""
+                  width={24}
+                  height={24}
+                  className="h-6 w-6 object-contain"
+                />
+              </span>
+              <div>
+                <p className={sectionLabel}>Collins AI</p>
+                <h2 className="text-base font-semibold text-slate-950">
+                  ECC Assistant
+                </h2>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {asking ? (
+                <Loader2 className="h-4 w-4 animate-spin text-red-600" />
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setHistoryOpen((current) => !current)}
+                className={cn(
+                  "flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950",
+                  historyOpen && "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white",
+                )}
+                aria-label={
+                  historyOpen ? "Hide chat history" : "Show chat history"
+                }
+                title={historyOpen ? "Hide chat history" : "Chat history"}
+              >
+                <List className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleNewChat}
+                disabled={asking}
+                className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="New chat"
+                title="New chat"
+              >
+                <MessageSquarePlus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={
+                  isFullView
+                    ? () => {
+                        setHistoryOpen(false);
+                        onDock();
+                      }
+                    : () => {
+                        setHistoryOpen(true);
+                        onExpand();
+                      }
+                }
+                className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950"
+                aria-label={
+                  isFullView
+                    ? "Return Collins AI to side panel"
+                    : "Expand Collins AI"
+                }
+                title={
+                  isFullView
+                    ? "Return to side panel"
+                    : "Open full chat view"
+                }
+              >
+                {isFullView ? (
+                  <PanelRightOpen className="h-4 w-4" />
+                ) : (
+                  <Maximize2 className="h-4 w-4" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950"
+                aria-label="Close Collins AI"
+                title="Close Collins AI"
+              >
+                <PanelRightClose className="h-4 w-4" />
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {asking ? (
-              <Loader2 className="h-4 w-4 animate-spin text-red-600" />
-            ) : null}
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-9 w-9 items-center justify-center border border-gray-200 bg-white text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950"
-              aria-label="Hide AI assistant"
-              title="Hide AI assistant"
-            >
-              <PanelRightClose className="h-4 w-4" />
-            </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {quickPrompts.map((prompt) => (
+              <button
+                key={prompt}
+                onClick={() => void ask(prompt)}
+                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-xs text-slate-600 transition hover:border-gray-950 hover:text-gray-950"
+              >
+                {prompt}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {quickPrompts.map((prompt) => (
-            <button
-              key={prompt}
-              onClick={() => void ask(prompt)}
-              className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-xs text-slate-600 transition hover:border-gray-950 hover:text-gray-950"
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        {messages.map((message, index) => (
-          <div
-            key={`${message.role}-${index}`}
-            className={cn(
-              "rounded-lg border p-3 text-sm leading-relaxed",
-              message.role === "user"
-                ? "ml-8 border-red-200 bg-red-50"
-                : "mr-8 border-slate-200 bg-slate-50",
-            )}
-          >
-            <p className={cn("mb-1", sectionLabel)}>
-              {message.role === "user" ? "You" : "Collins"}
-            </p>
-            <p className="whitespace-pre-wrap">{message.content}</p>
-          </div>
-        ))}
-      </div>
-      <form
-        onSubmit={handleSubmit}
-        onPaste={handleAssistantPaste}
-        className="border-t border-slate-200 p-3"
-      >
-        <div className="mb-2 flex justify-end">
-          <button
-            type="button"
-            onClick={handleTalkBackToggle}
-            className={cn(
-              "inline-flex h-9 items-center justify-center gap-2 border px-3 text-xs font-semibold transition",
-              talkBackEnabled
-                ? "border-gray-950 bg-gray-950 text-white"
-                : "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
-            )}
-          >
-            {talkBackEnabled ? (
-              <Volume2 className="h-4 w-4" />
-            ) : (
-              <VolumeX className="h-4 w-4" />
-            )}
-            Talk back
-          </button>
-        </div>
-        {voiceStatus ? (
-          <p className="mb-2 text-xs font-medium text-slate-500">
-            {voiceStatus}
-          </p>
-        ) : null}
-        {!attachment ? (
-          <div className="mb-2 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => assistantFileInputRef.current?.click()}
-              className="inline-flex h-9 items-center justify-center gap-2 border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-gray-300 hover:text-gray-950"
-            >
-              <Paperclip className="h-4 w-4" />
-              Add attachment
-            </button>
-            <div
-              tabIndex={0}
-              onPaste={handleAssistantPaste}
-              className="inline-flex h-9 items-center justify-center gap-2 border border-dashed border-slate-300 bg-slate-50 px-3 text-xs font-semibold text-slate-600 outline-none transition focus:border-gray-950 focus:bg-white"
-            >
-              <Upload className="h-4 w-4" />
-              Paste screenshot
-            </div>
-          </div>
-        ) : null}
-        {attachment ? (
-          <div className="mb-2 flex items-center gap-2 border border-slate-200 bg-slate-50 p-2">
-            <Image
-              src={attachment.dataUrl}
-              alt=""
-              width={48}
-              height={32}
-              unoptimized
-              className="h-8 w-12 border border-slate-200 bg-white object-contain"
-            />
-            <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600">
-              {attachment.name}
-            </span>
-            <button
-              type="button"
-              onClick={() => setAttachment(null)}
-              className="border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:border-gray-300 hover:text-gray-950"
-              title="Remove screenshot"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : null}
-        {attachmentError ? (
-          <p className="mb-2 text-xs font-medium text-rose-700">
-            {attachmentError}
-          </p>
-        ) : null}
-        <input
-          ref={assistantFileInputRef}
-          type="file"
-          accept="image/*"
-          className="sr-only"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) {
-              void handleAssistantImageFile(file);
-            }
-            event.target.value = "";
-          }}
-        />
-        <div className="flex gap-2">
-          <Input
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="Message Collins AI or paste a CR screenshot..."
-            className="bg-white"
+      </header>
+      <div className={cn(isFullView ? "flex min-h-0 flex-1 bg-white" : "contents")}>
+        {historyOpen ? (
+          <AssistantHistoryPanel
+            sessions={chatSessions}
+            activeChatId={activeChatId}
+            isFullView={isFullView}
+            disabled={asking}
+            onSelect={handleSelectChat}
+            onDelete={handleDeleteChat}
+            onNewChat={handleNewChat}
           />
+        ) : null}
+        <div
+          className={cn(
+            isFullView ? "flex min-h-0 min-w-0 flex-1 flex-col" : "contents",
+          )}
+        >
+          <div
+            ref={assistantMessagesScrollerRef}
+            className="min-h-0 flex-1 overflow-y-auto bg-white [overflow-anchor:none]"
+          >
+            <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-5 px-4 py-6">
+              {messages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={cn(
+                    "flex text-sm leading-relaxed",
+                    message.role === "user" ? "justify-end" : "justify-start",
+                  )}
+                >
+                  {message.role === "user" ? (
+                    <div className="max-w-[78%] bg-gray-950 px-4 py-2.5 text-white">
+                      <p className="whitespace-pre-wrap">{message.content}</p>
+                    </div>
+                  ) : (
+                    <div className="max-w-[86%] text-slate-900">
+                      <p className="whitespace-pre-wrap">{message.content}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div
+                ref={assistantMessagesEndRef}
+                aria-hidden="true"
+                className="[overflow-anchor:auto]"
+              />
+            </div>
+          </div>
+          <form
+            onSubmit={handleSubmit}
+            onPaste={handleAssistantPaste}
+            className="shrink-0 border-t border-slate-200 bg-white px-4 py-4"
+          >
+            <div className="mx-auto w-full max-w-3xl">
+          {voiceStatus ? (
+            <p className="mb-2 text-xs font-medium text-slate-500">
+              {voiceStatus}
+            </p>
+          ) : null}
+          {attachment ? (
+            <div className="mb-2 flex items-center gap-2 border border-slate-200 bg-slate-50 p-2">
+              <Image
+                src={attachment.dataUrl}
+                alt=""
+                width={48}
+                height={32}
+                unoptimized
+                className="h-8 w-12 border border-slate-200 bg-white object-contain"
+              />
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600">
+                {attachment.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAttachment(null)}
+                className="border border-slate-200 bg-white p-1.5 text-slate-500 transition hover:border-gray-300 hover:text-gray-950"
+                title="Remove screenshot"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
+          {attachmentError ? (
+            <p className="mb-2 text-xs font-medium text-rose-700">
+              {attachmentError}
+            </p>
+          ) : null}
+          <input
+            ref={assistantFileInputRef}
+            type="file"
+            accept="image/*"
+            className="sr-only"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                void handleAssistantImageFile(file);
+              }
+              event.target.value = "";
+            }}
+          />
+          <div className="border border-slate-200 bg-white p-2 shadow-lg shadow-slate-950/5">
+            <textarea
+              ref={assistantTextAreaRef}
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              placeholder="Ask Collins AI..."
+              rows={1}
+              className="min-h-10 w-full resize-none border-0 bg-transparent px-2 py-2 text-base leading-5 placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => assistantFileInputRef.current?.click()}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center border border-slate-200 bg-white text-slate-600 transition hover:border-gray-300 hover:text-gray-950"
+                aria-label="Add attachment"
+                title="Add attachment"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDictationToggle}
+                  disabled={!voiceSupported || asking || isVoiceActive}
+                  className={cn(
+                    "inline-flex h-9 w-9 shrink-0 items-center justify-center border transition disabled:cursor-not-allowed disabled:opacity-50",
+                    isDictating
+                      ? "border-gray-950 bg-gray-950 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
+                  )}
+                  title={
+                    voiceSupported
+                      ? isDictating
+                        ? "Stop dictation"
+                        : "Dictate"
+                      : "Voice input is not available in this browser"
+                  }
+                  aria-label={isDictating ? "Stop dictation" : "Dictate"}
+                >
+                  <Mic className="h-4 w-4" />
+                </button>
+                <Button
+                  type={canSendMessage && !isVoiceActive ? "submit" : "button"}
+                  size="icon"
+                  onClick={
+                    canSendMessage && !isVoiceActive
+                      ? undefined
+                      : handleVoiceChatToggle
+                  }
+                  disabled={
+                    isVoiceActive
+                      ? false
+                      : canSendMessage
+                        ? asking
+                        : !voiceSupported || asking
+                  }
+                  title={
+                    canSendMessage && !isVoiceActive
+                      ? "Send message"
+                      : voiceSupported
+                        ? isVoiceSpeaking
+                          ? "Interrupt and listen"
+                          : isVoiceActive
+                            ? "End voice mode"
+                            : "Voice mode"
+                        : "Voice input is not available in this browser"
+                  }
+                  aria-label={
+                    canSendMessage && !isVoiceActive
+                      ? "Send message"
+                      : isVoiceSpeaking
+                        ? "Interrupt and listen"
+                        : isVoiceActive
+                          ? "End voice mode"
+                          : "Voice mode"
+                  }
+                  className={cn(
+                    "shrink-0 border border-gray-950 bg-gray-950 text-white hover:bg-gray-800",
+                    isVoiceActive && "ring-2 ring-gray-300",
+                  )}
+                >
+                  {asking && !isVoiceActive ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : canSendMessage && !isVoiceActive ? (
+                    <ArrowUp className="h-4 w-4" />
+                  ) : (
+                    <AudioLines
+                      className={cn(
+                        "h-4 w-4",
+                        (isVoiceListening || isVoiceSpeaking) &&
+                          "animate-pulse",
+                      )}
+                    />
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AssistantHistoryPanel({
+  sessions,
+  activeChatId,
+  isFullView,
+  disabled,
+  onSelect,
+  onDelete,
+  onNewChat,
+}: {
+  sessions: AssistantChatSession[];
+  activeChatId: string;
+  isFullView: boolean;
+  disabled: boolean;
+  onSelect: (chatId: string) => void;
+  onDelete: (chatId: string) => void;
+  onNewChat: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "shrink-0 bg-slate-50",
+        isFullView
+          ? "flex w-72 flex-col border-r border-slate-200 px-3 py-4"
+          : "border-b border-slate-200 px-4 py-3",
+      )}
+    >
+      <div
+        className={cn(
+          "w-full",
+          isFullView ? "flex min-h-0 flex-1 flex-col" : "mx-auto max-w-4xl",
+        )}
+      >
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <p className={sectionLabel}>Chat History</p>
           <button
             type="button"
-            onClick={handleVoiceToggle}
-            disabled={!voiceSupported || asking || isListening}
-            className={cn(
-              "inline-flex h-9 w-9 shrink-0 items-center justify-center border transition disabled:cursor-not-allowed disabled:opacity-50",
-              "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
-            )}
-            title={
-              voiceSupported
-                ? isListening
-                  ? "Dictating"
-                  : "Click to dictate"
-                : "Voice input is not available in this browser"
-            }
-            aria-label="Start dictation"
+            onClick={onNewChat}
+            disabled={disabled}
+            className="inline-flex h-8 items-center gap-2 border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:border-gray-300 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Mic className="h-4 w-4" />
+            <MessageSquarePlus className="h-3.5 w-3.5" />
+            New chat
           </button>
-          <Button
-            type={isListening ? "button" : "submit"}
-            size="icon"
-            onClick={
-              isListening
-                ? () => stopVoiceInput("Dictation stopped.")
-                : undefined
-            }
-            disabled={
-              isListening ? false : (!input.trim() && !attachment) || asking
-            }
-            title={isListening ? "Stop dictation" : "Send message"}
-            aria-label={isListening ? "Stop dictation" : "Send message"}
-            className="shrink-0"
-          >
-            {isListening ? (
-              <Square className="h-4 w-4 fill-current" />
-            ) : asking ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
         </div>
-      </form>
-    </aside>
+        <div
+          className={cn(
+            "space-y-1 overflow-y-auto pr-1",
+            isFullView ? "min-h-0 flex-1" : "max-h-60",
+          )}
+        >
+          {sessions.length > 0 ? (
+            sessions.map((session) => {
+              const active = session.id === activeChatId;
+              return (
+                <div
+                  key={session.id}
+                  className={cn(
+                    "group flex items-center gap-2 border px-2 py-2 transition",
+                    active
+                      ? "border-gray-950 bg-white text-gray-950"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-gray-300 hover:text-gray-950",
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelect(session.id)}
+                    disabled={disabled}
+                    className="min-w-0 flex-1 text-left disabled:cursor-not-allowed"
+                  >
+                    <span className="block truncate text-sm font-semibold">
+                      {session.title}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] text-slate-500">
+                      {formatAssistantChatTimestamp(session.updatedAt)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(session.id)}
+                    disabled={disabled}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center text-slate-400 opacity-100 transition hover:bg-slate-100 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+                    aria-label={`Delete ${session.title}`}
+                    title="Delete chat"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })
+          ) : (
+            <p className="border border-dashed border-slate-200 bg-white p-3 text-sm text-slate-500">
+              No saved chats yet.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -5835,6 +7968,7 @@ function CrForm({
   submitLabel,
   onSubmit,
   variant = "full",
+  peopleOptions = [],
 }: {
   form: CrFormState;
   setForm: (form: CrFormState) => void;
@@ -5843,6 +7977,7 @@ function CrForm({
   submitLabel: string;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   variant?: "create" | "full";
+  peopleOptions?: string[];
 }) {
   function updateField<Key extends keyof CrFormState>(
     key: Key,
@@ -5891,10 +8026,11 @@ function CrForm({
             value={form.disposition}
             onChange={(value) => updateField("disposition", value)}
           />
-          <Field
+          <PeopleListField
             label="Responsible IPT(s)"
             value={form.responsibleIptsInput}
             onChange={(value) => updateField("responsibleIptsInput", value)}
+            peopleOptions={peopleOptions}
             placeholder="comma separated"
           />
           <Field
@@ -5947,10 +8083,11 @@ function CrForm({
             value={form.designAuthority}
             onChange={(value) => updateField("designAuthority", value)}
           />
-          <Field
+          <PersonField
             label="ECC Coordinator"
             value={form.eccCoordinator}
             onChange={(value) => updateField("eccCoordinator", value)}
+            peopleOptions={peopleOptions}
           />
         </div>
         {error ? (
@@ -5971,206 +8108,255 @@ function CrForm({
   }
 
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Field
-          label="Collins CR # / PW REA #"
-          value={form.crNumber}
-          onChange={(value) => updateField("crNumber", value)}
-          placeholder="CR-0222162"
-          required
-        />
-        <Field
-          label="Title"
-          value={form.title}
-          onChange={(value) => updateField("title", value)}
-          required
-          className="xl:col-span-2"
-        />
-        <Field
-          label="System"
-          value={form.system}
-          onChange={(value) => updateField("system", value)}
-        />
-        <Select
-          label="Status"
-          value={form.status}
-          onChange={(value) => updateField("status", value as CrStatus)}
-          options={statuses}
-        />
-        <Select
-          label="Priority"
-          value={form.priority}
-          onChange={(value) => updateField("priority", value as Priority)}
-          options={priorities}
-        />
-        <Select
-          label="Risk"
-          value={form.risk}
-          onChange={(value) => updateField("risk", value as Risk)}
-          options={risks}
-        />
-        <Field
-          label="Category"
-          value={form.category}
-          onChange={(value) => updateField("category", value)}
-        />
-        <Field
-          label="Owner"
-          value={form.owner}
-          onChange={(value) => updateField("owner", value)}
-        />
-        <Field
-          label="Requester"
-          value={form.requester}
-          onChange={(value) => updateField("requester", value)}
-        />
-        <Field
-          label="Submitted"
-          type="date"
-          value={form.submittedDate}
-          onChange={(value) => updateField("submittedDate", value)}
-        />
-        <Field
-          label="CO Need-by / Completion Date"
-          type="date"
-          value={form.targetDate}
-          onChange={(value) => updateField("targetDate", value)}
-        />
-      </div>
-      <div className="border-t border-slate-200 pt-4">
-        <p className={cn("mb-3", sectionLabel)}>ECC Routing</p>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <Select
-            label="Board"
-            value={form.eccBoard}
-            onChange={(value) => updateField("eccBoard", value as EccBoard)}
-            options={eccBoards}
-          />
-          <Select
-            label="Classification"
-            value={form.classification}
-            onChange={(value) =>
-              updateField("classification", value as CrClassification)
-            }
-            options={classifications}
-          />
-          <Select
-            label="Gate"
-            value={form.currentGate}
-            onChange={(value) =>
-              updateField("currentGate", value as ReviewGate)
-            }
-            options={reviewGates}
-          />
-          <Field
-            label="Meeting Date"
-            type="date"
-            value={form.meetingDate}
-            onChange={(value) => updateField("meetingDate", value)}
-          />
-          <Field
-            label="Time (EST)"
-            type="time"
-            value={form.meetingTimeEst}
-            onChange={(value) => updateField("meetingTimeEst", value)}
-          />
-          <Field
-            label="NCDOC Number"
-            value={form.ncdocNumber}
-            onChange={(value) => updateField("ncdocNumber", value)}
-          />
-          <Field
-            label="Class/Gate/Military Supplier EC"
-            value={form.classGateMilitarySupplierEc}
-            onChange={(value) =>
-              updateField("classGateMilitarySupplierEc", value)
-            }
-            className="xl:col-span-2"
-          />
-          <Field
-            label="Responsible IPT(s)"
-            value={form.responsibleIptsInput}
-            onChange={(value) => updateField("responsibleIptsInput", value)}
-            placeholder="comma separated"
-          />
-          <Field
-            label="Engine Program(s)"
-            value={form.engineProgramsInput}
-            onChange={(value) => updateField("engineProgramsInput", value)}
-            placeholder="comma separated"
-          />
-          <Field
-            label="Component Model(s)"
-            value={form.componentModelsInput}
-            onChange={(value) => updateField("componentModelsInput", value)}
-            placeholder="comma separated"
-          />
-          <Field
-            label="Supplier"
-            value={form.supplier}
-            onChange={(value) => updateField("supplier", value)}
-          />
-          <Field
-            label="Documentation Due"
-            type="date"
-            value={form.documentationDeadline}
-            onChange={(value) => updateField("documentationDeadline", value)}
-          />
-          <Field
-            label="Charge Number"
-            value={form.wbsChargeNumber}
-            onChange={(value) => updateField("wbsChargeNumber", value)}
-          />
-          <CheckboxField
-            label="FAR15?"
-            checked={form.far15}
-            onChange={(value) => updateField("far15", value)}
-          />
-          <CheckboxField
-            label="Charge Active"
-            checked={form.chargeNumberActive}
-            onChange={(value) => updateField("chargeNumberActive", value)}
-          />
-          <Field
-            label="Design Authority Group"
-            value={form.designAuthority}
-            onChange={(value) => updateField("designAuthority", value)}
-          />
-          <Field
-            label="ECC Coordinator"
-            value={form.eccCoordinator}
-            onChange={(value) => updateField("eccCoordinator", value)}
-          />
-          <Field
-            label="CR Folder Path"
-            value={form.crFolderPath}
-            onChange={(value) => updateField("crFolderPath", value)}
-            className="xl:col-span-2"
-          />
-          <Field
-            label="Quorum / Approvers"
-            value={form.quorumInput}
-            onChange={(value) => updateField("quorumInput", value)}
-            placeholder="comma separated"
-            className="xl:col-span-2"
-          />
-          <Field
-            label="Waiver Option"
-            value={form.waiverOption}
-            onChange={(value) => updateField("waiverOption", value)}
-            className="xl:col-span-2"
-          />
-          <Field
-            label="Disposition"
-            value={form.disposition}
-            onChange={(value) => updateField("disposition", value)}
-            className="xl:col-span-2"
-          />
+    <form onSubmit={onSubmit} className="space-y-5">
+      <div className="sticky top-0 z-20 -mx-4 -mt-4 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className={sectionLabel}>Editing CR</p>
+            <p className="mt-1 text-sm font-semibold text-slate-950">
+              {form.crNumber || "New CR"} / {form.title || "Untitled"}
+            </p>
+          </div>
+          <Button type="submit" disabled={saving}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            {submitLabel}
+          </Button>
         </div>
       </div>
-      <div className="border-t border-slate-200 pt-4">
-        <p className={cn("mb-3", sectionLabel)}>ECC Milestones</p>
+
+      <DetailSection title="CR Identity">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Field
+            label="Collins CR # / PW REA #"
+            value={form.crNumber}
+            onChange={(value) => updateField("crNumber", value)}
+            placeholder="CR-0222162"
+            required
+          />
+          <Field
+            label="Title"
+            value={form.title}
+            onChange={(value) => updateField("title", value)}
+            required
+            className="md:col-span-2"
+          />
+          <Select
+            label="Status"
+            value={form.status}
+            onChange={(value) => updateField("status", value as CrStatus)}
+            options={statuses}
+          />
+          <Select
+            label="Priority"
+            value={form.priority}
+            onChange={(value) => updateField("priority", value as Priority)}
+            options={priorities}
+          />
+          <Select
+            label="Risk"
+            value={form.risk}
+            onChange={(value) => updateField("risk", value as Risk)}
+            options={risks}
+          />
+          <Field
+            label="System"
+            value={form.system}
+            onChange={(value) => updateField("system", value)}
+          />
+          <Field
+            label="Category"
+            value={form.category}
+            onChange={(value) => updateField("category", value)}
+          />
+        </div>
+      </DetailSection>
+
+      <DetailSection title="Change Summary">
+        <div className="grid gap-3 xl:grid-cols-3">
+          <Textarea
+            label="Description"
+            value={form.description}
+            onChange={(value) => updateField("description", value)}
+          />
+          <Textarea
+            label="Business Impact"
+            value={form.businessImpact}
+            onChange={(value) => updateField("businessImpact", value)}
+          />
+          <Textarea
+            label="Technical Notes"
+            value={form.technicalNotes}
+            onChange={(value) => updateField("technicalNotes", value)}
+          />
+        </div>
+      </DetailSection>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <DetailSection title="Ownership">
+          <div className="grid gap-3 md:grid-cols-2">
+            <PersonField
+              label="Owner"
+              value={form.owner}
+              onChange={(value) => updateField("owner", value)}
+              peopleOptions={peopleOptions}
+            />
+            <PersonField
+              label="ECC Coordinator"
+              value={form.eccCoordinator}
+              onChange={(value) => updateField("eccCoordinator", value)}
+              peopleOptions={peopleOptions}
+            />
+            <PersonField
+              label="Requester"
+              value={form.requester}
+              onChange={(value) => updateField("requester", value)}
+              peopleOptions={peopleOptions}
+            />
+            <PeopleListField
+              label="Responsible IPT(s)"
+              value={form.responsibleIptsInput}
+              onChange={(value) => updateField("responsibleIptsInput", value)}
+              peopleOptions={peopleOptions}
+              placeholder="comma separated"
+            />
+          </div>
+        </DetailSection>
+
+        <DetailSection title="Schedule">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field
+              label="Submitted"
+              type="date"
+              value={form.submittedDate}
+              onChange={(value) => updateField("submittedDate", value)}
+            />
+            <Field
+              label="CO Need-by / Completion Date"
+              type="date"
+              value={form.targetDate}
+              onChange={(value) => updateField("targetDate", value)}
+            />
+            <Field
+              label="Meeting Date"
+              type="date"
+              value={form.meetingDate}
+              onChange={(value) => updateField("meetingDate", value)}
+            />
+            <Field
+              label="Time (EST)"
+              type="time"
+              value={form.meetingTimeEst}
+              onChange={(value) => updateField("meetingTimeEst", value)}
+            />
+            <Field
+              label="Documentation Due"
+              type="date"
+              value={form.documentationDeadline}
+              onChange={(value) => updateField("documentationDeadline", value)}
+              className="md:col-span-2"
+            />
+          </div>
+        </DetailSection>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <DetailSection title="Program And Routing">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Select
+              label="Board"
+              value={form.eccBoard}
+              onChange={(value) => updateField("eccBoard", value as EccBoard)}
+              options={eccBoards}
+            />
+            <Select
+              label="Classification"
+              value={form.classification}
+              onChange={(value) =>
+                updateField("classification", value as CrClassification)
+              }
+              options={classifications}
+            />
+            <Select
+              label="Gate"
+              value={form.currentGate}
+              onChange={(value) =>
+                updateField("currentGate", value as ReviewGate)
+              }
+              options={reviewGates}
+            />
+            <Field
+              label="Class/Gate/Military Supplier EC"
+              value={form.classGateMilitarySupplierEc}
+              onChange={(value) =>
+                updateField("classGateMilitarySupplierEc", value)
+              }
+            />
+            <Field
+              label="Engine Program(s)"
+              value={form.engineProgramsInput}
+              onChange={(value) => updateField("engineProgramsInput", value)}
+              placeholder="comma separated"
+            />
+            <Field
+              label="Component Model(s)"
+              value={form.componentModelsInput}
+              onChange={(value) => updateField("componentModelsInput", value)}
+              placeholder="comma separated"
+            />
+          </div>
+        </DetailSection>
+
+        <DetailSection title="Records And Charging">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field
+              label="NCDOC Number"
+              value={form.ncdocNumber}
+              onChange={(value) => updateField("ncdocNumber", value)}
+            />
+            <Field
+              label="Supplier"
+              value={form.supplier}
+              onChange={(value) => updateField("supplier", value)}
+            />
+            <Field
+              label="Charge Number"
+              value={form.wbsChargeNumber}
+              onChange={(value) => updateField("wbsChargeNumber", value)}
+            />
+            <Field
+              label="Design Authority Group"
+              value={form.designAuthority}
+              onChange={(value) => updateField("designAuthority", value)}
+            />
+            <CheckboxField
+              label="FAR15?"
+              checked={form.far15}
+              onChange={(value) => updateField("far15", value)}
+            />
+            <CheckboxField
+              label="Charge Active"
+              checked={form.chargeNumberActive}
+              onChange={(value) => updateField("chargeNumberActive", value)}
+            />
+            <Field
+              label="Waiver Option"
+              value={form.waiverOption}
+              onChange={(value) => updateField("waiverOption", value)}
+            />
+            <Field
+              label="Disposition"
+              value={form.disposition}
+              onChange={(value) => updateField("disposition", value)}
+            />
+          </div>
+        </DetailSection>
+      </div>
+
+      <DetailSection title="ECC Milestones">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <Select
             label="Doc Notify"
@@ -6251,30 +8437,31 @@ function CrForm({
             options={taskStates}
           />
         </div>
-      </div>
-      <div className="grid gap-3 xl:grid-cols-3">
-        <Textarea
-          label="Description"
-          value={form.description}
-          onChange={(value) => updateField("description", value)}
-        />
-        <Textarea
-          label="Business Impact"
-          value={form.businessImpact}
-          onChange={(value) => updateField("businessImpact", value)}
-        />
-        <Textarea
-          label="Technical Notes"
-          value={form.technicalNotes}
-          onChange={(value) => updateField("technicalNotes", value)}
-        />
-      </div>
-      <Field
-        label="Tags"
-        value={form.tagsInput}
-        onChange={(value) => updateField("tagsInput", value)}
-        placeholder="comma separated"
-      />
+      </DetailSection>
+
+      <DetailSection title="Files, Approvers, And Tags">
+        <div className="grid gap-3 xl:grid-cols-2">
+          <Field
+            label="CR Folder Path"
+            value={form.crFolderPath}
+            onChange={(value) => updateField("crFolderPath", value)}
+          />
+          <Field
+            label="Quorum / Approvers"
+            value={form.quorumInput}
+            onChange={(value) => updateField("quorumInput", value)}
+            placeholder="comma separated"
+          />
+          <Field
+            label="Tags"
+            value={form.tagsInput}
+            onChange={(value) => updateField("tagsInput", value)}
+            placeholder="comma separated"
+            className="xl:col-span-2"
+          />
+        </div>
+      </DetailSection>
+
       {error ? (
         <p className="text-sm font-medium text-rose-700">{error}</p>
       ) : null}
@@ -6289,6 +8476,172 @@ function CrForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+function PersonField({
+  label,
+  value,
+  onChange,
+  peopleOptions,
+  placeholder,
+  className,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  peopleOptions: string[];
+  placeholder?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const matches = useMemo(
+    () => matchingPeople(value, peopleOptions),
+    [peopleOptions, value],
+  );
+  const linked = isLinkedPerson(value, peopleOptions);
+  const showMatches = open && value.trim().length > 0 && matches.length > 0;
+
+  return (
+    <div className={cn("relative", className)}>
+      <label className="block">
+        <span className={cn("mb-1 block", sectionLabel)}>{label}</span>
+        <Input
+          value={value}
+          placeholder={placeholder}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setOpen(true);
+          }}
+          className={cn(
+            "bg-white pr-20",
+            linked && "border-emerald-300 focus-visible:ring-emerald-200",
+          )}
+        />
+      </label>
+      {linked ? (
+        <span className="pointer-events-none absolute right-2 top-[30px] rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+          Linked
+        </span>
+      ) : null}
+      {showMatches ? (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto border border-slate-200 bg-white shadow-lg">
+          {matches.map((person) => (
+            <button
+              key={person}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(person);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition hover:bg-emerald-50 focus:bg-emerald-50 focus:outline-none"
+            >
+              <UserRound className="h-4 w-4 shrink-0 text-slate-400" />
+              <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
+                {person}
+              </span>
+              <span className="text-xs font-semibold text-emerald-700">
+                Link
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PeopleListField({
+  label,
+  value,
+  onChange,
+  peopleOptions,
+  placeholder,
+  className,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  peopleOptions: string[];
+  placeholder?: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const token = activePeopleToken(value);
+  const matches = useMemo(
+    () => matchingPeople(token, peopleOptions),
+    [peopleOptions, token],
+  );
+  const names = parseList(value);
+  const showMatches = open && token.trim().length > 0 && matches.length > 0;
+
+  function linkPerson(person: string) {
+    onChange(replaceActivePeopleToken(value, person));
+    setOpen(false);
+  }
+
+  return (
+    <div className={cn("relative", className)}>
+      <label className="block">
+        <span className={cn("mb-1 block", sectionLabel)}>{label}</span>
+        <Input
+          value={value}
+          placeholder={placeholder}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setOpen(true);
+          }}
+          className="bg-white"
+        />
+      </label>
+      {names.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {names.map((name) => {
+            const linked = isLinkedPerson(name, peopleOptions);
+            return (
+              <span
+                key={name}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+                  linked
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-slate-200 bg-slate-50 text-slate-500",
+                )}
+              >
+                {name}
+                {linked ? " / linked" : ""}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+      {showMatches ? (
+        <div className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto border border-slate-200 bg-white shadow-lg">
+          {matches.map((person) => (
+            <button
+              key={person}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => linkPerson(person)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition hover:bg-emerald-50 focus:bg-emerald-50 focus:outline-none"
+            >
+              <UserRound className="h-4 w-4 shrink-0 text-slate-400" />
+              <span className="min-w-0 flex-1 truncate font-medium text-slate-800">
+                {person}
+              </span>
+              <span className="text-xs font-semibold text-emerald-700">
+                Link
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -6444,17 +8797,6 @@ function Info({
   );
 }
 
-function TextBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className={cn("mb-1", sectionLabel)}>{label}</p>
-      <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm leading-relaxed text-slate-700">
-        {value}
-      </p>
-    </div>
-  );
-}
-
 function UpdateItem({ update }: { update: CrUpdate }) {
   return (
     <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
@@ -6517,6 +8859,383 @@ function useFullscreenTarget<T extends HTMLElement>(targetRef: {
   };
 }
 
+function clampWorkflowZoom(value: number) {
+  return Math.min(
+    workflowMaxZoom,
+    Math.max(workflowMinZoom, Math.round(value * 100) / 100),
+  );
+}
+
+function getWorkflowCurrentStepZoom(
+  viewport: HTMLDivElement,
+  phaseCard: HTMLElement | null,
+) {
+  const availableWidth = Math.max(
+    1,
+    viewport.clientWidth - workflowCanvasPadding * 2,
+  );
+  const focusWidth =
+    (phaseCard?.offsetWidth ?? workflowPhaseCardWidth) +
+    workflowCanvasPadding * 2;
+
+  return clampWorkflowZoom(
+    Math.min(workflowCurrentStepInitialZoom, availableWidth / focusWidth),
+  );
+}
+
+function scrollWorkflowToPhase(
+  viewport: HTMLDivElement,
+  phaseCard: HTMLElement,
+) {
+  const viewportRect = viewport.getBoundingClientRect();
+  const cardRect = phaseCard.getBoundingClientRect();
+  const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+  const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  const targetLeft =
+    viewport.scrollLeft +
+    cardRect.left -
+    viewportRect.left -
+    (viewport.clientWidth - cardRect.width) / 2;
+  const targetTop =
+    viewport.scrollTop +
+    cardRect.top -
+    viewportRect.top -
+    Math.max(
+      workflowCanvasPadding,
+      (viewport.clientHeight - cardRect.height) / 2,
+    );
+
+  viewport.scrollTo({
+    left: Math.min(
+      maxScrollLeft,
+      Math.max(0, targetLeft),
+    ),
+    top: Math.min(
+      maxScrollTop,
+      Math.max(0, targetTop),
+    ),
+  });
+}
+
+function defaultWorkflowPhasePosition(index: number): WhiteboardPosition {
+  return {
+    x: workflowCanvasPadding + index * (workflowPhaseCardWidth + workflowPhaseGap),
+    y: workflowCanvasPadding,
+  };
+}
+
+function clampWorkflowPhasePosition(position: WhiteboardPosition) {
+  return {
+    x: Math.max(workflowCanvasPadding, Math.round(position.x)),
+    y: Math.max(workflowCanvasPadding, Math.round(position.y)),
+  };
+}
+
+function getWorkflowCanvasSize(
+  phasePositions: WhiteboardPosition[],
+  phaseCount: number,
+) {
+  const defaultWidth =
+    workflowCanvasPadding * 2 +
+    phaseCount * workflowPhaseCardWidth +
+    Math.max(0, phaseCount - 1) * workflowPhaseGap;
+  const maxX = phasePositions.reduce(
+    (currentMax, position) => Math.max(currentMax, position.x),
+    workflowCanvasPadding,
+  );
+  const maxY = phasePositions.reduce(
+    (currentMax, position) => Math.max(currentMax, position.y),
+    workflowCanvasPadding,
+  );
+
+  return {
+    width: Math.max(
+      defaultWidth,
+      maxX + workflowPhaseCardWidth + workflowCanvasPadding,
+    ),
+    height: maxY + workflowCanvasChartHeight + workflowCanvasPadding,
+  };
+}
+
+function readWorkflowPhasePositions(crId: CrId) {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(
+      workflowPhasePositionsStorageKey,
+    );
+    if (!rawValue) {
+      return {};
+    }
+
+    const parsed = JSON.parse(rawValue) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    const positionsByCr = parsed as Record<
+      string,
+      Record<string, Partial<WhiteboardPosition>>
+    >;
+    const savedPositions = positionsByCr[crId];
+    if (!savedPositions || typeof savedPositions !== "object") {
+      return {};
+    }
+
+    const nextPositions: Partial<Record<string, WhiteboardPosition>> = {};
+    for (const [phaseId, position] of Object.entries(savedPositions)) {
+      if (
+        typeof position?.x === "number" &&
+        Number.isFinite(position.x) &&
+        typeof position.y === "number" &&
+        Number.isFinite(position.y)
+      ) {
+        nextPositions[phaseId] = clampWorkflowPhasePosition({
+          x: position.x,
+          y: position.y,
+        });
+      }
+    }
+    return nextPositions;
+  } catch {
+    return {};
+  }
+}
+
+function saveWorkflowPhasePositions(
+  crId: CrId,
+  positions: Partial<Record<string, WhiteboardPosition>>,
+) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(
+      workflowPhasePositionsStorageKey,
+    );
+    const parsed = rawValue ? (JSON.parse(rawValue) as unknown) : {};
+    const positionsByCr =
+      parsed && typeof parsed === "object"
+        ? (parsed as Record<string, Partial<Record<string, WhiteboardPosition>>>)
+        : {};
+    positionsByCr[crId] = positions;
+    window.localStorage.setItem(
+      workflowPhasePositionsStorageKey,
+      JSON.stringify(positionsByCr),
+    );
+  } catch {
+    // Position persistence is nice-to-have; dragging should still work.
+  }
+}
+
+function getDefaultAssistantMessages(): AssistantMessage[] {
+  return [
+    {
+      role: "assistant",
+      content:
+        "Ready to triage blockers, due dates, ownership load, or risk across the Collins Aerospace CR queue.",
+    },
+  ];
+}
+
+function createAssistantChatSession(
+  messages: AssistantMessage[] = getDefaultAssistantMessages(),
+): AssistantChatSession {
+  const normalizedMessages = normalizeAssistantMessages(messages);
+  const now = Date.now();
+
+  return {
+    id: createAssistantChatId(),
+    title: getAssistantChatTitle(normalizedMessages),
+    messages: normalizedMessages,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function buildAssistantChatSessionUpdate(
+  sessions: AssistantChatSession[],
+  currentChatId: string,
+  messages: AssistantMessage[],
+): AssistantChatSession {
+  const existingSession = sessions.find(
+    (session) => session.id === currentChatId,
+  );
+  const now = Date.now();
+
+  return {
+    id: existingSession?.id ?? createAssistantChatId(),
+    title: getAssistantChatTitle(messages),
+    messages,
+    createdAt: existingSession?.createdAt ?? now,
+    updatedAt: now,
+  };
+}
+
+function createAssistantChatId() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readAssistantChatSessions() {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(assistantChatHistoryStorageKey);
+    if (!rawValue) {
+      return [];
+    }
+
+    return normalizeAssistantChatSessions(JSON.parse(rawValue) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+function writeAssistantChatSessions(sessions: AssistantChatSession[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      assistantChatHistoryStorageKey,
+      JSON.stringify(normalizeAssistantChatSessions(sessions)),
+    );
+  } catch {
+    // Chat history persistence should never block using the assistant.
+  }
+}
+
+function normalizeAssistantChatSessions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((session) => normalizeAssistantChatSession(session))
+    .filter(
+      (session): session is AssistantChatSession => session !== null,
+    )
+    .sort((first, second) => second.updatedAt - first.updatedAt)
+    .slice(0, assistantMaxStoredChats);
+}
+
+function normalizeAssistantChatSession(
+  value: unknown,
+): AssistantChatSession | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const session = value as Partial<AssistantChatSession>;
+  if (typeof session.id !== "string" || !session.id.trim()) {
+    return null;
+  }
+
+  const messages = normalizeAssistantMessages(session.messages);
+  const now = Date.now();
+  const createdAt =
+    typeof session.createdAt === "number" && Number.isFinite(session.createdAt)
+      ? session.createdAt
+      : now;
+  const updatedAt =
+    typeof session.updatedAt === "number" && Number.isFinite(session.updatedAt)
+      ? session.updatedAt
+      : createdAt;
+
+  return {
+    id: session.id,
+    title:
+      typeof session.title === "string" && session.title.trim()
+        ? session.title.trim()
+        : getAssistantChatTitle(messages),
+    messages,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeAssistantMessages(value: unknown) {
+  if (!Array.isArray(value)) {
+    return getDefaultAssistantMessages();
+  }
+
+  const messages = value
+    .filter(
+      (message): message is AssistantMessage =>
+        Boolean(message) &&
+        typeof message === "object" &&
+        ((message as AssistantMessage).role === "assistant" ||
+          (message as AssistantMessage).role === "user") &&
+        typeof (message as AssistantMessage).content === "string",
+    )
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+
+  return messages.length > 0 ? messages : getDefaultAssistantMessages();
+}
+
+function getAssistantChatTitle(messages: AssistantMessage[]) {
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  const source = firstUserMessage?.content ?? "New chat";
+  const cleaned = source
+    .replace(/\[Screenshot attached\]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned) {
+    return "New chat";
+  }
+
+  return cleaned.length > 54 ? `${cleaned.slice(0, 51)}...` : cleaned;
+}
+
+function formatAssistantChatTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Saved chat";
+  }
+
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  if (sameDay) {
+    return `Today ${date.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Yesterday ${date.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
+  }
+
+  return date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  });
+}
+
 function defaultWhiteboardPosition(index: number): WhiteboardPosition {
   return {
     x: whiteboardPadding + (index % 4) * whiteboardColumnGap,
@@ -6537,37 +9256,29 @@ function getWhiteboardCanvasSize(
   );
 
   return {
-    width: Math.max(
-      1_080,
-      maxX + whiteboardExpandedNoteWidth + whiteboardPadding,
-    ),
-    height: Math.max(
-      680,
-      maxY + whiteboardExpandedNoteHeight + whiteboardPadding,
-    ),
+    width: Math.max(1_080, maxX + whiteboardNoteWidth + whiteboardPadding),
+    height: Math.max(680, maxY + whiteboardNoteHeight + whiteboardPadding),
   };
 }
 
 function clampWhiteboardPosition(
   position: WhiteboardPosition,
   boardSize: { width: number; height: number },
-  expanded: boolean,
 ) {
-  const noteWidth = expanded
-    ? whiteboardExpandedNoteWidth
-    : whiteboardNoteWidth;
-  const noteHeight = expanded
-    ? whiteboardExpandedNoteHeight
-    : whiteboardNoteHeight;
-
   return {
     x: Math.max(
       whiteboardPadding,
-      Math.min(position.x, boardSize.width - noteWidth - whiteboardPadding),
+      Math.min(
+        position.x,
+        boardSize.width - whiteboardNoteWidth - whiteboardPadding,
+      ),
     ),
     y: Math.max(
       whiteboardPadding,
-      Math.min(position.y, boardSize.height - noteHeight - whiteboardPadding),
+      Math.min(
+        position.y,
+        boardSize.height - whiteboardNoteHeight - whiteboardPadding,
+      ),
     ),
   };
 }
@@ -6607,12 +9318,139 @@ function crMatchesScope(cr: Cr, scope: CrScope, localOwner: string) {
   return true;
 }
 
+function buildPeopleOptions(
+  crs: Cr[],
+  signedInName: string,
+  signedInEmail: string | null,
+) {
+  const people = new Map<string, string>();
+
+  function addPerson(value: string | null | undefined) {
+    const cleaned = cleanPersonName(value);
+    if (!cleaned || isPlaceholderPerson(cleaned)) {
+      return;
+    }
+    const key = personIdentityKey(cleaned);
+    const existing = people.get(key);
+    if (!existing || shouldPreferPersonLabel(cleaned, existing)) {
+      people.set(key, cleaned);
+    }
+  }
+
+  addPerson(signedInName);
+  addPerson(signedInEmail);
+
+  for (const cr of crs) {
+    addPerson(cr.owner);
+    addPerson(cr.requester);
+    addPerson(cr.eccCoordinator);
+    for (const person of cr.responsibleIpts ?? []) {
+      addPerson(person);
+    }
+    for (const person of cr.quorum ?? []) {
+      addPerson(person);
+    }
+  }
+
+  return Array.from(people.values()).sort((first, second) =>
+    first.localeCompare(second),
+  );
+}
+
+function matchingPeople(value: string, peopleOptions: string[]) {
+  const query = personSearchKey(value);
+  if (!query) {
+    return peopleOptions.slice(0, 8);
+  }
+
+  return peopleOptions
+    .filter((person) => personSearchKey(person).includes(query))
+    .slice(0, 8);
+}
+
+function isLinkedPerson(value: string, peopleOptions: string[]) {
+  const normalized = personIdentityKey(value);
+  return Boolean(
+    normalized &&
+      peopleOptions.some((person) => personIdentityKey(person) === normalized),
+  );
+}
+
+function activePeopleToken(value: string) {
+  const parts = value.split(",");
+  return parts[parts.length - 1]?.trim() ?? "";
+}
+
+function replaceActivePeopleToken(value: string, person: string) {
+  const parts = value.split(",");
+  parts[parts.length - 1] = person;
+  return parts.map((part) => part.trim()).filter(Boolean).join(", ");
+}
+
+function cleanPersonName(value: string | null | undefined) {
+  return value?.trim().replace(/\s+/g, " ") ?? "";
+}
+
+function normalizePersonName(value: string) {
+  return cleanPersonName(value).toLowerCase();
+}
+
+function personIdentityKey(value: string) {
+  const cleaned = cleanPersonName(value);
+  const emailLocalPart = cleaned.match(/^([^@\s]+)@[^@\s]+$/)?.[1];
+  return personSearchKey(emailLocalPart ?? cleaned);
+}
+
+function personSearchKey(value: string) {
+  return cleanPersonName(value)
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function isEmailPerson(value: string) {
+  return /^[^@\s]+@[^@\s]+$/.test(cleanPersonName(value));
+}
+
+function shouldPreferPersonLabel(candidate: string, existing: string) {
+  const candidateIsEmail = isEmailPerson(candidate);
+  const existingIsEmail = isEmailPerson(existing);
+
+  if (candidateIsEmail !== existingIsEmail) {
+    return existingIsEmail;
+  }
+
+  return candidate.length > existing.length;
+}
+
+function isPlaceholderPerson(value: string) {
+  return ["unassigned", "unknown", "not set", "ipt", "collins user"].includes(
+    normalizePersonName(value),
+  );
+}
+
 function belongsToLocalOwner(cr: Cr, localOwner: string) {
-  const normalized = localOwner.trim().toLowerCase();
+  const normalized = personIdentityKey(localOwner);
   if (!normalized) {
     return false;
   }
-  return cr.owner.trim().toLowerCase() === normalized;
+  return peopleLinkedToCr(cr).some(
+    (person) => personIdentityKey(person) === normalized,
+  );
+}
+
+function peopleLinkedToCr(cr: Cr) {
+  return [
+    cr.owner,
+    cr.eccCoordinator ?? "",
+    cr.requester,
+    ...(cr.responsibleIpts ?? []),
+    ...(cr.quorum ?? []),
+  ].filter((person) => {
+    const cleaned = cleanPersonName(person);
+    return cleaned && !isPlaceholderPerson(cleaned);
+  });
 }
 
 function getProfilePhotoStorageKey(name: string, email: string | null) {
@@ -6775,12 +9613,26 @@ function normalizeSidebarNavSection(
   return null;
 }
 
+function getSidebarNavDropPosition(
+  event: DragEvent<HTMLElement>,
+): SidebarNavDropPosition {
+  const targetRect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < targetRect.top + targetRect.height / 2
+    ? "before"
+    : "after";
+}
+
 function reorderSidebarNavOrder(
   order: SidebarNavSection[],
   sourceSection: SidebarNavSection,
   targetSection: SidebarNavSection,
+  dropPosition: SidebarNavDropPosition = "before",
 ) {
   const normalizedOrder = normalizeSidebarNavOrder(order);
+  if (sourceSection === targetSection) {
+    return normalizedOrder;
+  }
+
   const nextOrder = normalizedOrder.filter(
     (section) => section !== sourceSection,
   );
@@ -6790,8 +9642,24 @@ function reorderSidebarNavOrder(
     return normalizedOrder;
   }
 
-  nextOrder.splice(targetIndex, 0, sourceSection);
+  const insertionIndex = targetIndex + (dropPosition === "after" ? 1 : 0);
+  nextOrder.splice(insertionIndex, 0, sourceSection);
   return nextOrder;
+}
+
+function splitFirstLastName(value: string): FirstLastName {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] ?? "",
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+function buildFullName(firstName: string, lastName: string) {
+  return [firstName, lastName]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 function getProfileInitials(name: string, email: string | null) {
@@ -7683,7 +10551,7 @@ ${sheet.rows
   <Styles>
     <Style ss:ID="Header">
       <Font ss:Bold="1"/>
-      <Interior ss:Color="#EAF2F8" ss:Pattern="Solid"/>
+      <Interior ss:Color="#F3F4F6" ss:Pattern="Solid"/>
       <Borders>
         <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
       </Borders>
@@ -8024,29 +10892,404 @@ function subscribeToStaticStore() {
 }
 
 function getVoiceSupportSnapshot() {
-  return Boolean(getSpeechRecognitionConstructor());
+  return Boolean(
+    (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) ||
+      getSpeechRecognitionConstructor(),
+  );
 }
 
 function getFalseSnapshot() {
   return false;
 }
 
-function speakText(text: string) {
+let currentLocalTtsAudio: HTMLAudioElement | null = null;
+let currentLocalTtsUrl: string | null = null;
+let currentSpeechRunId = 0;
+
+async function speakText(text: string) {
+  const spokenText = cleanSpokenText(text);
+  const speechRunId = (currentSpeechRunId += 1);
+  if (await speakWithLocalTts(spokenText, speechRunId)) {
+    return;
+  }
+
+  if (speechRunId === currentSpeechRunId) {
+    await speakWithBrowserTts(spokenText);
+  }
+}
+
+async function warmLocalTts() {
+  try {
+    await fetch("/api/tts", { method: "GET" });
+  } catch {
+    // Browser TTS remains available if local Kokoro is not ready.
+  }
+}
+
+async function warmLocalStt() {
+  try {
+    await fetch("/api/stt", { method: "GET" });
+  } catch {
+    // Browser speech recognition remains available if local STT is not ready.
+  }
+}
+
+async function transcribeLocalAudio(audio: Float32Array, sampleRate: number) {
+  const targetSampleRate = 16_000;
+  const resampledAudio =
+    sampleRate === targetSampleRate
+      ? audio
+      : resampleAudio(audio, sampleRate, targetSampleRate);
+  const audioPcm16Base64 = encodePcm16Base64(resampledAudio);
+  const response = await fetch("/api/stt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      audioPcm16Base64,
+      sampleRate: targetSampleRate,
+    }),
+  });
+
+  const data = (await response.json().catch(() => null)) as {
+    text?: string;
+    error?: string;
+  } | null;
+  if (!response.ok) {
+    throw new Error(data?.error ?? "Local transcription failed.");
+  }
+
+  return data?.text ?? "";
+}
+
+function calculateRms(frame: Float32Array) {
+  let sum = 0;
+  for (let index = 0; index < frame.length; index += 1) {
+    sum += frame[index] * frame[index];
+  }
+
+  return Math.sqrt(sum / Math.max(1, frame.length));
+}
+
+function trimAudioFrames(frames: Float32Array[], maxSamples: number) {
+  let totalSamples = frames.reduce((total, frame) => total + frame.length, 0);
+  while (frames.length > 1 && totalSamples > maxSamples) {
+    const shiftedFrame = frames.shift();
+    totalSamples -= shiftedFrame?.length ?? 0;
+  }
+}
+
+function concatenateFloat32Frames(frames: Float32Array[]) {
+  const totalLength = frames.reduce((total, frame) => total + frame.length, 0);
+  const output = new Float32Array(totalLength);
+  let offset = 0;
+
+  for (const frame of frames) {
+    output.set(frame, offset);
+    offset += frame.length;
+  }
+
+  return output;
+}
+
+function resampleAudio(
+  input: Float32Array,
+  sourceSampleRate: number,
+  targetSampleRate: number,
+) {
+  if (sourceSampleRate === targetSampleRate || input.length === 0) {
+    return input;
+  }
+
+  const ratio = sourceSampleRate / targetSampleRate;
+  const outputLength = Math.max(1, Math.round(input.length / ratio));
+  const output = new Float32Array(outputLength);
+
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourceIndex = index * ratio;
+    const leftIndex = Math.floor(sourceIndex);
+    const rightIndex = Math.min(leftIndex + 1, input.length - 1);
+    const fraction = sourceIndex - leftIndex;
+    output[index] =
+      input[leftIndex] * (1 - fraction) + input[rightIndex] * fraction;
+  }
+
+  return output;
+}
+
+function encodePcm16Base64(audio: Float32Array) {
+  const bytes = new Uint8Array(audio.length * 2);
+  const view = new DataView(bytes.buffer);
+
+  for (let index = 0; index < audio.length; index += 1) {
+    const clamped = Math.max(-1, Math.min(1, audio[index]));
+    view.setInt16(
+      index * 2,
+      clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff,
+      true,
+    );
+  }
+
+  return uint8ArrayToBase64(bytes);
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return window.btoa(binary);
+}
+
+function stopMediaStream(stream: MediaStream) {
+  stream.getTracks().forEach((track) => track.stop());
+}
+
+async function speakWithLocalTts(text: string, speechRunId: number) {
+  try {
+    const chunks = splitSpokenText(text);
+    let playedAnyChunk = false;
+    let nextBlobPromise: Promise<Blob | null> | null =
+      chunks[0] ? fetchLocalTtsBlob(chunks[0]) : null;
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      if (speechRunId !== currentSpeechRunId) {
+        return true;
+      }
+
+      const blob = await nextBlobPromise;
+      const nextChunk = chunks[index + 1];
+      nextBlobPromise = nextChunk ? fetchLocalTtsBlob(nextChunk) : null;
+      if (!blob) {
+        return playedAnyChunk;
+      }
+
+      if (speechRunId !== currentSpeechRunId) {
+        return true;
+      }
+
+      await playLocalTtsBlob(blob, speechRunId);
+      playedAnyChunk = true;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchLocalTtsBlob(text: string) {
+  try {
+    const response = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+
+    return response.ok ? response.blob() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function playLocalTtsBlob(blob: Blob, speechRunId: number) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  currentLocalTtsAudio = audio;
+  currentLocalTtsUrl = url;
+
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      if (currentLocalTtsAudio === audio) {
+        currentLocalTtsAudio = null;
+      }
+      if (currentLocalTtsUrl === url) {
+        currentLocalTtsUrl = null;
+      }
+      URL.revokeObjectURL(url);
+    };
+
+    audio.onended = () => {
+      cleanup();
+      resolve();
+    };
+    audio.onerror = () => {
+      cleanup();
+      reject(new Error("Local TTS playback failed."));
+    };
+
+    if (speechRunId !== currentSpeechRunId) {
+      cleanup();
+      resolve();
+      return;
+    }
+
+    void audio.play().catch((error) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
+async function speakWithBrowserTts(text: string) {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) {
     return;
   }
 
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(cleanSpokenText(text));
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  window.speechSynthesis.speak(utterance);
+  const synth = window.speechSynthesis;
+  const voices = await getSpeechSynthesisVoices(synth);
+
+  return new Promise<void>((resolve) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voice = chooseAssistantVoice(voices);
+    let finished = false;
+    const finish = () => {
+      if (!finished) {
+        finished = true;
+        resolve();
+      }
+    };
+
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    } else {
+      utterance.lang = "en-US";
+    }
+    utterance.rate = 0.92;
+    utterance.pitch = 1.04;
+    utterance.volume = 1;
+    utterance.onend = finish;
+    utterance.onerror = finish;
+    synth.cancel();
+    synth.speak(utterance);
+  });
+}
+
+function stopSpokenAudio() {
+  currentSpeechRunId += 1;
+  if (currentLocalTtsAudio) {
+    currentLocalTtsAudio.pause();
+    currentLocalTtsAudio.currentTime = 0;
+    currentLocalTtsAudio = null;
+  }
+  if (currentLocalTtsUrl) {
+    URL.revokeObjectURL(currentLocalTtsUrl);
+    currentLocalTtsUrl = null;
+  }
+
+  window.speechSynthesis?.cancel();
+}
+
+function splitSpokenText(text: string) {
+  const sentences =
+    text.match(/[^.!?;:]+[.!?;:]?|\S+/g)?.map((part) => part.trim()) ?? [];
+  const chunks: string[] = [];
+  let current = "";
+  const maxChunkLength = 180;
+
+  for (const sentence of sentences) {
+    if (!sentence) {
+      continue;
+    }
+
+    if (current && current.length + sentence.length + 1 > maxChunkLength) {
+      chunks.push(current);
+      current = sentence;
+      continue;
+    }
+
+    current = current ? `${current} ${sentence}` : sentence;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks.length > 0 ? chunks : [text];
+}
+
+function getSpeechSynthesisVoices(synth: SpeechSynthesis) {
+  return new Promise<SpeechSynthesisVoice[]>((resolve) => {
+    const currentVoices = synth.getVoices();
+    if (currentVoices.length > 0) {
+      resolve(currentVoices);
+      return;
+    }
+
+    let settled = false;
+    const settle = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      synth.removeEventListener("voiceschanged", settle);
+      resolve(synth.getVoices());
+    };
+
+    synth.addEventListener("voiceschanged", settle, { once: true });
+    window.setTimeout(settle, 300);
+  });
+}
+
+function chooseAssistantVoice(voices: SpeechSynthesisVoice[]) {
+  const englishVoices = voices.filter((voice) =>
+    voice.lang.toLowerCase().startsWith("en"),
+  );
+  const candidates = englishVoices.length > 0 ? englishVoices : voices;
+
+  return candidates
+    .map((voice) => ({ voice, score: scoreAssistantVoice(voice) }))
+    .sort((first, second) => second.score - first.score)[0]?.voice;
+}
+
+function scoreAssistantVoice(voice: SpeechSynthesisVoice) {
+  const name = voice.name.toLowerCase();
+  const lang = voice.lang.toLowerCase();
+  const preferredNames = [
+    "jenny",
+    "aria",
+    "ava",
+    "emma",
+    "guy",
+    "samantha",
+    "serena",
+    "daniel",
+    "google us english",
+    "google uk english",
+  ];
+
+  return [
+    lang === "en-us" ? 60 : 0,
+    lang.startsWith("en") ? 35 : 0,
+    voice.localService ? 15 : 0,
+    name.includes("natural") ? 120 : 0,
+    name.includes("premium") || name.includes("enhanced") ? 80 : 0,
+    name.includes("microsoft") || name.includes("google") ? 45 : 0,
+    preferredNames.some((preferredName) => name.includes(preferredName))
+      ? 70
+      : 0,
+    name.includes("compact") || name.includes("legacy") ? -80 : 0,
+  ].reduce((total, score) => total + score, 0);
 }
 
 function cleanSpokenText(text: string) {
   return text
+    .replace(/```[\s\S]*?```/g, "code block")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`#>]/g, "")
     .replace(/\[Screenshot attached\]/gi, "")
-    .replace(/\bCR-(\d+)/g, "CR $1")
+    .replace(/\bCR[-\s]?(\d+)\b/gi, (_match, digits: string) => {
+      return `C R ${digits.split("").join(" ")}`;
+    })
+    .replace(/\bECC\b/g, "E C C")
+    .replace(/\bOOC\b/g, "O O C")
+    .replace(/\bPWES\b/g, "P W E S")
+    .replace(/\bIPTs?\b/g, "I P T")
+    .replace(/\s+/g, " ")
     .trim();
 }
 

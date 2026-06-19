@@ -198,6 +198,9 @@ If none applies, use a concise descriptive disposition.
 - Approval evidence must identify approver, CR number, role, what was approved,
   source, and timestamp/date where available.
 - NCDOC and xClass work should remain visible as separate checklist states.
+- For MS ECC, "pushed to closure" means the CR is in NCDOC/xClass records work,
+  not the Closure phase and not Closed, until NCDOC, xClass, and IPT notification
+  are complete.
 - Design authority affects the closure path and notification routing.
 
 ## Naming Rules to Support

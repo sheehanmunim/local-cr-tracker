@@ -1,0 +1,90 @@
+{
+  "defaultProfile": "balanced",
+  "profiles": {
+    "fast": {
+      "chat": "gemma3:4b",
+      "voice": "gemma3:4b",
+      "vision": "gemma3:4b"
+    },
+    "balanced": {
+      "chat": "qwen3.5:4b",
+      "voice": "gemma3:4b",
+      "vision": "granite3.2-vision:2b"
+    },
+    "quality": {
+      "chat": "qwen3.5:4b",
+      "voice": "gemma3:4b",
+      "vision": "granite3.2-vision:2b"
+    }
+  },
+  "weights": {
+    "fast": {
+      "chat": { "quality": 0.35, "speed": 0.65 },
+      "voice": { "quality": 0.25, "speed": 0.75 },
+      "vision": { "quality": 0.45, "speed": 0.55 }
+    },
+    "balanced": {
+      "chat": { "quality": 0.65, "speed": 0.35 },
+      "voice": { "quality": 0.35, "speed": 0.65 },
+      "vision": { "quality": 0.65, "speed": 0.35 }
+    },
+    "quality": {
+      "chat": { "quality": 0.8, "speed": 0.2 },
+      "voice": { "quality": 0.45, "speed": 0.55 },
+      "vision": { "quality": 0.8, "speed": 0.2 }
+    }
+  },
+  "candidates": {
+    "chat": [
+      { "name": "qwen3.5:4b", "minRamGb": 8, "quality": 9.2, "speed": 7.2 },
+      { "name": "qwen3:latest", "minRamGb": 10, "quality": 8.6, "speed": 5.6 },
+      { "name": "qwen3:4b", "minRamGb": 8, "quality": 8.4, "speed": 6.8 },
+      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.4, "speed": 8.2 },
+      { "name": "qwen2.5:7b", "minRamGb": 12, "quality": 8.0, "speed": 5.4 },
+      { "name": "qwen2.5:3b-instruct", "minRamGb": 6, "quality": 6.5, "speed": 8.0 },
+      { "name": "granite3.2:2b", "minRamGb": 6, "quality": 5.8, "speed": 9.0 }
+    ],
+    "voice": [
+      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.5, "speed": 8.5 },
+      { "name": "qwen3.5:4b", "minRamGb": 8, "quality": 8.8, "speed": 7.0 },
+      { "name": "qwen3:4b", "minRamGb": 8, "quality": 8.0, "speed": 6.6 },
+      { "name": "qwen3:latest", "minRamGb": 10, "quality": 8.2, "speed": 5.4 },
+      { "name": "qwen2.5:3b-instruct", "minRamGb": 6, "quality": 6.4, "speed": 8.1 },
+      { "name": "granite3.2:2b", "minRamGb": 6, "quality": 5.6, "speed": 9.0 }
+    ],
+    "vision": [
+      { "name": "granite3.2-vision:2b", "minRamGb": 6, "quality": 8.8, "speed": 8.0 },
+      { "name": "gemma3:4b", "minRamGb": 8, "quality": 7.8, "speed": 7.6 },
+      { "name": "qwen2.5vl:3b", "minRamGb": 8, "quality": 8.0, "speed": 6.4 },
+      { "name": "llava-phi3:3.8b", "minRamGb": 8, "quality": 6.8, "speed": 6.2 }
+    ]
+  },
+  "installedBonus": {
+    "fast": 0.35,
+    "balanced": 0.2,
+    "quality": 0.1
+  },
+  "fallbacks": {
+    "chat": [
+      "qwen3.5:4b",
+      "qwen3:4b",
+      "qwen3:latest",
+      "gemma3:4b",
+      "qwen2.5:3b-instruct",
+      "granite3.2:2b"
+    ],
+    "voice": [
+      "gemma3:4b",
+      "qwen3:4b",
+      "qwen3:latest",
+      "qwen2.5:3b-instruct",
+      "granite3.2:2b"
+    ],
+    "vision": [
+      "granite3.2-vision:2b",
+      "gemma3:4b",
+      "qwen2.5vl:3b",
+      "llava-phi3:3.8b"
+    ]
+  }
+}

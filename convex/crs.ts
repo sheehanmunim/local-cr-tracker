@@ -800,7 +800,11 @@ export const upsertFromAssistant = mutation({
       chairApprovalStatus: "Not Started",
       closureNotificationStatus:
         args.closureNotificationStatus ??
-        (status === "Closed" ? "In Progress" : "Not Started"),
+        (status === "Closed"
+          ? "Complete"
+          : status === "NCDOC/xClass"
+            ? "In Progress"
+            : "Not Started"),
       cmWorkingListStatus: "Not Started",
       waiverOption: null,
       designAuthority: "",
@@ -1175,6 +1179,135 @@ export const assistantContext = query({
   },
 });
 
+export const assistantCrDetails = query({
+  args: { crNumbers: v.array(v.string()) },
+  handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
+    const requestedCrNumbers = Array.from(
+      new Set(
+        args.crNumbers
+          .slice(0, 8)
+          .map((crNumber) => normalizeCrNumber(crNumber))
+          .filter((crNumber) => /^CR-\d{7}$/.test(crNumber)),
+      ),
+    );
+    const rows = [];
+    const missing = [];
+
+    for (const crNumber of requestedCrNumbers) {
+      const cr = await ctx.db
+        .query("crs")
+        .withIndex("by_crNumber", (q) => q.eq("crNumber", crNumber))
+        .unique();
+
+      if (!cr || cr.isArchived) {
+        missing.push(crNumber);
+        continue;
+      }
+
+      const updates = await ctx.db
+        .query("crUpdates")
+        .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+        .order("desc")
+        .take(3);
+      const actions = await ctx.db
+        .query("crActions")
+        .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+        .order("desc")
+        .take(20);
+      const approvals = await ctx.db
+        .query("crApprovals")
+        .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", cr._id))
+        .order("desc")
+        .take(20);
+
+      rows.push({
+        crNumber: cr.crNumber,
+        title: cr.title,
+        status: cr.status,
+        priority: cr.priority,
+        risk: cr.risk,
+        category: cr.category,
+        owner: cr.owner,
+        requester: cr.requester,
+        system: cr.system,
+        targetDate: cr.targetDate,
+        submittedDate: cr.submittedDate,
+        description: cr.description,
+        businessImpact: cr.businessImpact,
+        technicalNotes: cr.technicalNotes,
+        tags: cr.tags,
+        eccBoard: cr.eccBoard ?? "Other",
+        classification: cr.classification ?? "TBD",
+        currentGate: cr.currentGate ?? "None",
+        meetingDate: cr.meetingDate ?? null,
+        meetingTimeEst: cr.meetingTimeEst ?? "",
+        ncdocNumber: cr.ncdocNumber ?? "",
+        classGateMilitarySupplierEc: cr.classGateMilitarySupplierEc ?? "",
+        responsibleIpts: cr.responsibleIpts ?? [],
+        enginePrograms: cr.enginePrograms ?? [],
+        componentModels: cr.componentModels ?? [],
+        supplier: cr.supplier ?? "",
+        far15: cr.far15 ?? false,
+        documentationDeadline: cr.documentationDeadline ?? null,
+        crFolderPath: cr.crFolderPath ?? "",
+        wbsChargeNumber: cr.wbsChargeNumber ?? "",
+        chargeNumberActive: cr.chargeNumberActive ?? false,
+        quorum: cr.quorum ?? [],
+        documentationNotificationStatus:
+          cr.documentationNotificationStatus ?? "Not Started",
+        preMeetingReviewStatus: cr.preMeetingReviewStatus ?? "Not Started",
+        meetingAttendanceStatus: cr.meetingAttendanceStatus ?? "Not Started",
+        postMeetingPdfStatus: cr.postMeetingPdfStatus ?? "Not Started",
+        ncdocStatus: cr.ncdocStatus ?? "Not Started",
+        xclassStatus: cr.xclassStatus ?? "Not Started",
+        oocApprovalStatus: cr.oocApprovalStatus ?? "Not Started",
+        chairApprovalStatus: cr.chairApprovalStatus ?? "Not Started",
+        closureNotificationStatus: cr.closureNotificationStatus ?? "Not Started",
+        cmWorkingListStatus: cr.cmWorkingListStatus ?? "Not Started",
+        waiverOption: cr.waiverOption ?? null,
+        designAuthority: cr.designAuthority ?? "",
+        disposition: cr.disposition ?? "",
+        eccCoordinator: cr.eccCoordinator ?? "",
+        openActions: actions
+          .filter((action) => action.status !== "Closed")
+          .map((action) => ({
+            gate: action.gate,
+            owner: action.owner,
+            body: action.body,
+            status: action.status,
+            dueDate: action.dueDate,
+            evidenceLocation: action.evidenceLocation,
+          })),
+        approvals: approvals.map((approval) => ({
+          gate: approval.gate,
+          approverName: approval.approverName,
+          role: approval.role,
+          status: approval.status,
+          source: approval.source,
+          evidenceLocation: approval.evidenceLocation,
+          sentAt: approval.sentAt,
+          approvedAt: approval.approvedAt,
+        })),
+        latestUpdates: updates.map((update) => ({
+          body: update.body,
+          author: update.author,
+          kind: update.kind,
+          createdAt: update.createdAt,
+        })),
+      });
+    }
+
+    return {
+      generatedAt: Date.now(),
+      totalInContext: rows.length,
+      missing,
+      crs: rows,
+    };
+  },
+});
+
 async function requireCr(ctx: MutationCtx, id: Id<"crs">) {
   const cr = await ctx.db.get(id);
   if (!cr || cr.isArchived) {
@@ -1226,7 +1359,7 @@ function assistantWorkflowTags(
 ) {
   return [
     eccScope ?? "",
-    status === "Closed" ? "Closure" : "",
+    status === "Closed" || status === "NCDOC/xClass" ? "Closure Prep" : "",
     previousWork?.toLowerCase().includes("ooc") ? "OOC" : "",
     "Collins AI",
   ];
@@ -1287,6 +1420,9 @@ function buildAssistantTitle(
   if (status === "Closed") {
     return `${crNumber} - ${scope}closure`;
   }
+  if (status === "NCDOC/xClass") {
+    return `${crNumber} - ${scope}NCDOC/xClass`;
+  }
   return `${crNumber} - ${scope}workflow update`;
 }
 
@@ -1296,7 +1432,12 @@ function buildAssistantDisposition(
 ) {
   const scope = eccScope ? ` for ${eccScope}` : "";
   if (status === "Closed") {
-    return `Pushed to closure${scope}`;
+    return `Closed${scope}`;
+  }
+  if (status === "NCDOC/xClass") {
+    return `${
+      eccScope ? `In ${eccScope} records` : "In records"
+    }; NCDOC, xClass, and IPT notification pending`;
   }
   if (status === "Pending OOC Approvals") {
     return `Pending OOC approvals${scope}`;

@@ -5,7 +5,8 @@ downloadable GitHub project with:
 
 - Next.js App Router for the web UI
 - Convex local deployments for the reactive database and server functions
-- Ollama with Qwen for local CR questions and summaries
+- Ollama with auto-selected local models for CR questions, screenshots, and voice
+- Local Moonshine speech-to-text and Kokoro text-to-speech for voice mode
 - Tailwind, shadcn/ui primitives, and lucide icons
 
 ## Features
@@ -13,7 +14,7 @@ downloadable GitHub project with:
 - Create, edit, archive, filter, and export CRs
 - Track status, priority, risk, owner, requester, system, due date, impact, and technical notes
 - Add update notes and status-change history
-- Ask a local Qwen model about blockers, ownership, risk, and review priorities
+- Ask a local model about blockers, ownership, risk, and review priorities
 
 ## Requirements
 
@@ -21,8 +22,13 @@ downloadable GitHub project with:
 - npm
 - Ollama installed locally
 
-The default model is `qwen3:latest`, which maps to the current Qwen 3 local
-model in Ollama. You can override it with `OLLAMA_MODEL`.
+The launcher auto-selects a local model profile. Smaller machines use the
+`fast` profile, machines with at least 12 GB RAM use `balanced`, and larger
+machines use `quality`. Each profile ranks candidate models by speed, answer
+quality, memory fit, and whether the model is already installed. You can
+override the profile with `LOCAL_MODEL_PROFILE=fast`, `balanced`, or `quality`,
+or pin individual models with `OLLAMA_MODEL`, `OLLAMA_VOICE_MODEL`, and
+`OLLAMA_VISION_MODEL`.
 
 ## One-Command Local Setup
 
@@ -46,7 +52,8 @@ That command will:
 - install Ollama if missing
 - install npm dependencies
 - start Ollama if it is not already running
-- pull `qwen3:latest` if it is not already installed
+- pull the selected local Ollama models if they are not already installed
+- save the resolved local model choices into `.env.local`
 - configure/start a local Convex deployment
 - start the Next.js app
 
@@ -90,28 +97,50 @@ npm run local
 Create `.env.local` or use your shell environment:
 
 ```bash
-OLLAMA_MODEL=qwen3:latest
+LOCAL_MODEL_PROFILE=auto
+# Optional: pin exact models to bypass adaptive local selection.
+# OLLAMA_MODEL=qwen3.5:4b
+# OLLAMA_VOICE_MODEL=gemma3:4b
+# OLLAMA_VISION_MODEL=granite3.2-vision:2b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+KOKORO_MODEL=onnx-community/Kokoro-82M-v1.0-ONNX
+KOKORO_VOICE=af_heart
+KOKORO_DTYPE=q8
+LOCAL_STT_MODEL=onnx-community/moonshine-tiny-ONNX
+LOCAL_STT_DTYPE=q8
+LOCAL_STT_DEVICE=cpu
 ```
 
-For a larger local model, set `OLLAMA_MODEL` to another installed Qwen tag, such
-as `qwen3:14b` or `qwen3:32b`, if your machine can run it.
+Recommended clone-friendly defaults live in
+[`config/local-models.json`](./config/local-models.json). It has separate
+candidate lists for text chat, live voice, and screenshots, so the app can keep
+voice fast while still using a stronger text or vision model when the machine
+can handle it. Setting an individual `OLLAMA_*` model pins that role exactly and
+skips adaptive ranking for that role.
+
+Voice input and output are local as well. The first dictation or voice-chat run
+downloads and caches the Moonshine speech-to-text model and Kokoro TTS model;
+after they are cached, set `LOCAL_STT_OFFLINE=1` and `KOKORO_OFFLINE=1` if you
+want to force fully offline voice mode.
 
 ## Useful Commands
 
 ```bash
-npm run local          # install dependencies, ensure Qwen, start local app
-npm run setup          # install dependencies and Qwen without starting the app
+npm run local          # install dependencies, ensure local models, start local app
+npm run setup          # install dependencies and local models without starting the app
+npm run models         # ensure/pull local Ollama models and update .env.local
 npm run dev:local      # local Convex + Next.js, after setup
 npm run convex:local   # local Convex only
 npm run lint           # lint the repo
 npm run build          # production build
+npm run start          # ensures local models, then starts the production build
 ```
 
 ## Notes
 
 - This project is designed for local development and local data. Convex local
   deployment state lives in `.convex/` and `.env.local`.
-- The assistant route calls only your local Ollama server. It does not use a
-  hosted LLM API.
-- Sources checked while setting up this repo: [Convex local deployments](https://docs.convex.dev/cli/local-deployments), [Convex agent mode](https://docs.convex.dev/cli/agent-mode), [Qwen3 official blog](https://qwenlm.github.io/blog/qwen3/), and [Ollama Qwen3 tags](https://www.ollama.com/library/qwen3/tags).
+- The assistant route calls only your local Ollama server. Voice recognition and
+  speech output use locally cached ONNX models. The app does not use a hosted
+  LLM API.
+- Sources checked while setting up this repo: [Convex local deployments](https://docs.convex.dev/cli/local-deployments), [Convex agent mode](https://docs.convex.dev/cli/agent-mode), [Qwen3 official blog](https://qwenlm.github.io/blog/qwen3/), [Ollama Qwen 3.5 4B](https://ollama.com/library/qwen3.5:4b), [Ollama Qwen3 tags](https://www.ollama.com/library/qwen3/tags), [Ollama Gemma 3](https://ollama.com/library/gemma3), [Ollama Granite 3.2 Vision](https://ollama.com/library/granite3.2-vision), [Moonshine tiny ONNX](https://huggingface.co/onnx-community/moonshine-tiny-ONNX), [Transformers.js pipelines](https://huggingface.co/docs/transformers.js/api/pipelines), and [Kokoro.js](https://huggingface.co/posts/Xenova/503648859052804).

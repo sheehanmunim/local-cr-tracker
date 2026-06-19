@@ -5,6 +5,7 @@ import {
   isAuthenticated,
 } from "@/lib/auth-server";
 import { requestOllamaChat } from "@/lib/ollama";
+import localModelsConfig from "@/config/local-models.json";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
@@ -23,6 +24,12 @@ type AssistantRequest = {
   messages?: IncomingMessage[];
   selectedCrNumber?: string | null;
   image?: AssistantImage | null;
+  mode?: "text" | "voice";
+  currentUser?: {
+    localOwner?: string | null;
+    name?: string | null;
+    email?: string | null;
+  } | null;
 };
 
 type AssistantServiceResponse = {
@@ -32,12 +39,88 @@ type AssistantServiceResponse = {
 };
 
 type AssistantChatMessage = {
-  role: "assistant" | "user";
+  role: "assistant" | "system" | "user";
   content: string;
   images?: string[];
 };
 
-type WorkflowStatus = "Closed" | "Pending OOC Approvals";
+type AssistantContextRow = {
+  crNumber?: string;
+  title?: string;
+  status?: string;
+  priority?: string;
+  risk?: string;
+  category?: string;
+  owner?: string;
+  requester?: string;
+  system?: string;
+  targetDate?: string | null;
+  submittedDate?: string;
+  description?: string;
+  businessImpact?: string;
+  technicalNotes?: string;
+  tags?: string[];
+  eccBoard?: string;
+  classification?: string;
+  currentGate?: string;
+  meetingDate?: string | null;
+  meetingTimeEst?: string;
+  ncdocNumber?: string;
+  classGateMilitarySupplierEc?: string;
+  eccCoordinator?: string;
+  responsibleIpts?: string[];
+  enginePrograms?: string[];
+  componentModels?: string[];
+  supplier?: string;
+  documentationDeadline?: string | null;
+  quorum?: string[];
+  documentationNotificationStatus?: string;
+  preMeetingReviewStatus?: string;
+  meetingAttendanceStatus?: string;
+  postMeetingPdfStatus?: string;
+  ncdocStatus?: string;
+  xclassStatus?: string;
+  oocApprovalStatus?: string;
+  chairApprovalStatus?: string;
+  closureNotificationStatus?: string;
+  cmWorkingListStatus?: string;
+  waiverOption?: string | null;
+  designAuthority?: string;
+  disposition?: string;
+  openActions?: Array<{
+    gate?: string;
+    owner?: string;
+    body?: string;
+    status?: string;
+    dueDate?: string | null;
+    evidenceLocation?: string;
+  }>;
+  approvals?: Array<{
+    gate?: string;
+    approverName?: string;
+    role?: string;
+    status?: string;
+    source?: string;
+    evidenceLocation?: string;
+    sentAt?: string;
+    approvedAt?: string;
+  }>;
+  latestUpdates?: Array<{
+    body?: string;
+    author?: string;
+    kind?: string;
+    createdAt?: number;
+  }>;
+};
+
+type AssistantContextResponse = {
+  generatedAt?: number;
+  totalInContext?: number;
+  missing?: string[];
+  crs?: AssistantContextRow[];
+};
+
+type WorkflowStatus = "Closed" | "NCDOC/xClass" | "Pending OOC Approvals";
 
 type WorkflowTaskState = "Complete" | "In Progress";
 
@@ -60,8 +143,9 @@ type AssistantWorkflowResult = {
   status: WorkflowStatus | string;
 };
 
-const DEFAULT_MODEL = "qwen3:latest";
-const DEFAULT_VISION_MODEL = "qwen2.5vl:3b";
+const DEFAULT_MODEL = localModelsConfig.profiles.balanced.chat;
+const DEFAULT_VOICE_MODEL = localModelsConfig.profiles.balanced.voice;
+const DEFAULT_VISION_MODEL = localModelsConfig.profiles.balanced.vision;
 const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
 
 export async function POST(request: Request) {
@@ -111,26 +195,107 @@ export async function POST(request: Request) {
   }
 
   const imageBase64 = cleanImageBase64(body?.image?.base64 ?? "");
+  const isVoiceMode = body?.mode === "voice" && !imageBase64;
   const model = imageBase64
     ? process.env.OLLAMA_VISION_MODEL ?? DEFAULT_VISION_MODEL
-    : process.env.OLLAMA_MODEL ?? DEFAULT_MODEL;
+    : isVoiceMode
+      ? process.env.OLLAMA_VOICE_MODEL ??
+        process.env.OLLAMA_MODEL ??
+        DEFAULT_VOICE_MODEL
+      : process.env.OLLAMA_MODEL ?? DEFAULT_MODEL;
+  const voiceModel =
+    process.env.OLLAMA_VOICE_MODEL ?? process.env.OLLAMA_MODEL ?? DEFAULT_VOICE_MODEL;
+  const visionModel = process.env.OLLAMA_VISION_MODEL ?? DEFAULT_VISION_MODEL;
   const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_URL;
-  const context = await fetchAuthQuery(api.crs.assistantContext, { limit: 100 });
-  const processKnowledge = await readProcessKnowledge();
+  const requestedCrNumbers = findRequestedCrNumbers(messages, selectedCrNumber);
+  const modelAnswer = buildModelQuestionAnswer(messages, {
+    text: process.env.OLLAMA_MODEL ?? DEFAULT_MODEL,
+    voice: voiceModel,
+    vision: visionModel,
+  });
+  if (modelAnswer) {
+    return NextResponse.json({ answer: modelAnswer });
+  }
+  const needsCrContext = shouldUseCrContext(
+    messages,
+    requestedCrNumbers,
+    selectedCrNumber,
+    Boolean(imageBase64),
+  );
+  const contextPayload = needsCrContext
+    ? normalizeAssistantContextResponse(
+        await fetchAuthQuery(api.crs.assistantContext, {
+          limit: isVoiceMode ? 35 : 120,
+        }),
+      )
+    : { crs: [] };
+  const directCrContext =
+    requestedCrNumbers.length > 0
+      ? normalizeAssistantContextResponse(
+          await fetchAuthQuery(api.crs.assistantCrDetails, {
+            crNumbers: requestedCrNumbers,
+          }),
+        )
+      : null;
+  const contextRows = mergeAssistantContextRows(
+    directCrContext?.crs ?? [],
+    contextPayload.crs ?? [],
+  );
+  const localOwner = cleanText(
+    body?.currentUser?.localOwner ||
+      body?.currentUser?.name ||
+      body?.currentUser?.email ||
+      "",
+  );
+  const crDetailAnswer = buildCrDetailQuestionAnswer(
+    messages,
+    contextRows,
+    requestedCrNumbers,
+    directCrContext?.missing ?? [],
+  );
+  if (crDetailAnswer) {
+    return NextResponse.json({ answer: crDetailAnswer });
+  }
+  const ownerAnswer = buildOwnerQuestionAnswer(messages, contextRows, localOwner);
+  if (ownerAnswer) {
+    return NextResponse.json({ answer: ownerAnswer });
+  }
+  const processKnowledge = needsCrContext ? await readProcessKnowledge() : "";
+  const contextLimit = isVoiceMode ? 12_000 : 30_000;
 
   const systemPrompt = [
     "You are an ECC assistant for Collins Aerospace engineering change requests.",
-    "Use only the CR data provided in the JSON context. If the data does not answer the question, say what is missing.",
+    needsCrContext
+      ? "Use only the CR data provided in the JSON context. If the data does not answer the question, say what is missing."
+      : "If the user is making casual conversation or asking a general question, answer normally and briefly.",
     "Be concise, practical, and specific. Mention CR numbers when making claims.",
+    "Keep a professional tone and do not use emojis.",
+    isVoiceMode
+      ? "The user is in live voice mode. Answer conversationally in 1 to 3 short sentences unless they ask for detail."
+      : "",
     "If the user attaches a screenshot with CR intake notes, read the screenshot and extract the PWES Military ECC fields. Read digits exactly and double-check CR numbers, dates, and charge numbers. Map Presenter to ECC Coordinator, Timestamp or Timeslot to Meeting Date and Time, Provide Collins CR to Collins CR # / PW REA #, CR Title/Description to Description, Engine Programs affected to Engine Program(s), Review being requested and CR Classification to Class/Gate/Military Supplier EC, Component Model name to Component Model(s), and Open Charge Number to Charge Number.",
     "Do not reveal chain-of-thought or use think tags.",
     selectedCrNumber
       ? `The user currently has ${selectedCrNumber} selected in the UI.`
       : "No CR is currently selected in the UI.",
+    localOwner
+      ? `The current local owner/user is "${localOwner}". Treat "me", "my", "mine", and "myself" as this user unless the user says otherwise.`
+      : "The current local owner/user was not provided. If the user asks about 'my' CRs, say the local owner is missing.",
     `Current timestamp: ${new Date().toISOString()}.`,
-    `ECC process knowledge:\n${processKnowledge}`,
-    `CR JSON context:\n${JSON.stringify(context, null, 2).slice(0, 30000)}`,
-  ].join("\n\n");
+    needsCrContext ? `ECC process knowledge:\n${processKnowledge}` : "",
+    needsCrContext
+      ? `CR JSON context:\n${JSON.stringify(
+          {
+            ...contextPayload,
+            crs: contextRows,
+          },
+          null,
+          2,
+        ).slice(0, contextLimit)}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   try {
     const chatMessages: AssistantChatMessage[] = messages.map((message) => ({
@@ -158,13 +323,17 @@ export async function POST(request: Request) {
       ollamaBaseUrl,
       model,
       stream: false,
+      think: false,
       messages: [
         { role: "system", content: systemPrompt },
         ...chatMessages,
       ],
       options: {
-        temperature: 0.2,
+        temperature: isVoiceMode ? 0.35 : 0.25,
+        num_predict: isVoiceMode ? 220 : 520,
+        num_ctx: needsCrContext ? (isVoiceMode ? 8192 : 16384) : 4096,
       },
+      keep_alive: process.env.OLLAMA_KEEP_ALIVE ?? "30m",
     });
 
     if (!ollamaResponse.ok) {
@@ -179,7 +348,20 @@ export async function POST(request: Request) {
     }
 
     const data = (await ollamaResponse.json()) as AssistantServiceResponse;
-    const answer = data.message?.content?.trim();
+    let answer = data.message?.content?.trim();
+
+    if (isSuspiciousAssistantAnswer(answer, messages)) {
+      answer = await retryWithConversationalModel({
+        ollamaBaseUrl,
+        model: voiceModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...chatMessages,
+        ],
+        isVoiceMode,
+        needsCrContext,
+      });
+    }
 
     return NextResponse.json({
       answer:
@@ -214,6 +396,422 @@ function cleanImageBase64(value: unknown) {
   return value.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "").trim();
 }
 
+function buildModelQuestionAnswer(
+  messages: IncomingMessage[],
+  models: { text: string; voice: string; vision: string },
+) {
+  const latestUserMessage = findLastUserMessage(messages);
+  if (!latestUserMessage || !isModelQuestion(latestUserMessage.content)) {
+    return null;
+  }
+
+  return `I am running locally through Ollama. Text chat uses ${models.text}, voice chat uses ${models.voice}, and screenshot review uses ${models.vision}.`;
+}
+
+function isModelQuestion(value: string) {
+  const text = value.toLowerCase();
+  return (
+    /\b(what|which|who)\b/.test(text) &&
+    /\b(model|llm|ai|are you|running|using)\b/.test(text)
+  );
+}
+
+function shouldUseCrContext(
+  messages: IncomingMessage[],
+  requestedCrNumbers: string[],
+  selectedCrNumber: string | null,
+  hasImage: boolean,
+) {
+  if (hasImage || requestedCrNumbers.length > 0 || selectedCrNumber) {
+    return true;
+  }
+
+  const latestUserMessage = findLastUserMessage(messages);
+  if (!latestUserMessage) {
+    return false;
+  }
+
+  const latestText = latestUserMessage.content.toLowerCase();
+  if (mentionsCrWork(latestText)) {
+    return true;
+  }
+
+  if (/^(what|why|how|wdym|explain|more|tell me more|ok|okay)\??$/i.test(latestText.trim())) {
+    return messages
+      .slice(-5)
+      .some((message) => mentionsCrWork(message.content.toLowerCase()));
+  }
+
+  return false;
+}
+
+function mentionsCrWork(value: string) {
+  return /\b(crs?|change requests?|ecc|review|blockers?|blocked|high-risk|risk|owner|assigned|due|target date|approval|approvals|actions?|ooc|ncdoc|xclass|closure|meeting|intake|documentation|quorum|evidence|workflow|waiver|gate|supplier|program|ipt)\b/.test(
+    value,
+  );
+}
+
+function isSuspiciousAssistantAnswer(
+  answer: string | undefined,
+  messages: IncomingMessage[],
+) {
+  const text = cleanText(answer);
+  if (!text) {
+    return true;
+  }
+
+  const latestUserMessage = findLastUserMessage(messages);
+  const latestText = cleanText(latestUserMessage?.content);
+  if (latestText.length < 4) {
+    return false;
+  }
+
+  const normalized = text.toLowerCase().replace(/[.!?]+$/g, "");
+  return (
+    ["i", "based", "why", "okay"].includes(normalized) ||
+    (text.split(/\s+/).length === 1 && latestText.split(/\s+/).length >= 3)
+  );
+}
+
+async function retryWithConversationalModel({
+  ollamaBaseUrl,
+  model,
+  messages,
+  isVoiceMode,
+  needsCrContext,
+}: {
+  ollamaBaseUrl: string;
+  model: string;
+  messages: AssistantChatMessage[];
+  isVoiceMode: boolean;
+  needsCrContext: boolean;
+}) {
+  const response = await requestOllamaChat({
+    ollamaBaseUrl,
+    model,
+    stream: false,
+    messages,
+    options: {
+      temperature: isVoiceMode ? 0.35 : 0.3,
+      num_predict: isVoiceMode ? 220 : 420,
+      num_ctx: needsCrContext ? 8192 : 4096,
+    },
+    keep_alive: process.env.OLLAMA_KEEP_ALIVE ?? "30m",
+  });
+
+  if (!response.ok) {
+    await response.text().catch(() => "");
+    return "";
+  }
+
+  const data = (await response.json()) as AssistantServiceResponse;
+  return data.message?.content?.trim() ?? "";
+}
+
+function normalizeAssistantContextResponse(
+  value: unknown,
+): AssistantContextResponse {
+  if (Array.isArray(value)) {
+    return { crs: value as AssistantContextRow[] };
+  }
+
+  if (!value || typeof value !== "object") {
+    return { crs: [] };
+  }
+
+  const payload = value as AssistantContextResponse;
+  return {
+    ...payload,
+    crs: Array.isArray(payload.crs) ? payload.crs : [],
+    missing: Array.isArray(payload.missing) ? payload.missing : [],
+  };
+}
+
+function mergeAssistantContextRows(
+  primaryRows: AssistantContextRow[],
+  secondaryRows: AssistantContextRow[],
+) {
+  const seen = new Set<string>();
+  const rows: AssistantContextRow[] = [];
+
+  for (const row of [...primaryRows, ...secondaryRows]) {
+    const crNumber = normalizeCrNumber(row.crNumber ?? "");
+    if (!crNumber || seen.has(crNumber)) {
+      continue;
+    }
+    seen.add(crNumber);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+function findRequestedCrNumbers(
+  messages: IncomingMessage[],
+  selectedCrNumber: string | null,
+) {
+  const latestUserMessage = findLastUserMessage(messages);
+  const requested = [
+    ...(latestUserMessage ? findCrNumbers(latestUserMessage.content) : []),
+    selectedCrNumber ?? "",
+  ]
+    .map(normalizeCrNumber)
+    .filter(Boolean);
+
+  return Array.from(new Set(requested));
+}
+
+function buildCrDetailQuestionAnswer(
+  messages: IncomingMessage[],
+  context: AssistantContextRow[],
+  requestedCrNumbers: string[],
+  missingCrNumbers: string[],
+) {
+  const latestUserMessage = findLastUserMessage(messages);
+  if (
+    !latestUserMessage ||
+    requestedCrNumbers.length === 0 ||
+    !isCrDetailQuestion(latestUserMessage.content)
+  ) {
+    return null;
+  }
+
+  const rowsByCrNumber = new Map(
+    context
+      .map((row) => [normalizeCrNumber(row.crNumber ?? ""), row] as const)
+      .filter(([crNumber]) => crNumber),
+  );
+  const foundRows = requestedCrNumbers
+    .map((crNumber) => rowsByCrNumber.get(crNumber))
+    .filter((row): row is AssistantContextRow => Boolean(row));
+  const missing = requestedCrNumbers.filter(
+    (crNumber) => !rowsByCrNumber.has(crNumber),
+  );
+  const explicitlyMissing = Array.from(
+    new Set([...missing, ...missingCrNumbers.map(normalizeCrNumber)].filter(Boolean)),
+  );
+
+  if (foundRows.length === 0) {
+    return `I could not find ${requestedCrNumbers.join(
+      ", ",
+    )} in the active CR register. It may be archived, not loaded in this local database, or the CR number may be different.`;
+  }
+
+  const summaries = foundRows.map(formatCrDetailSummary).join("\n\n");
+  const missingNote =
+    explicitlyMissing.length > 0
+      ? `\n\nI could not find ${explicitlyMissing.join(", ")} in the active CR register.`
+      : "";
+
+  return `${summaries}${missingNote}`;
+}
+
+function isCrDetailQuestion(value: string) {
+  const text = value.toLowerCase();
+  if (!/\bcr[-\s_]*\d{1,7}\b/i.test(value)) {
+    return false;
+  }
+
+  return (
+    /\b(tell|about|detail|details|status|summary|summarize|what|show|info|risk|owner|due|date|priority|block|action|approval|where|who|when|describe|explain)\b/.test(
+      text,
+    ) || /^cr[-\s_]*\d{1,7}$/i.test(value.trim())
+  );
+}
+
+function formatCrDetailSummary(cr: AssistantContextRow) {
+  const title = cleanText(cr.title) || "Untitled";
+  const overview = [
+    cr.status ? `status ${cr.status}` : "",
+    cr.priority ? `${cr.priority} priority` : "",
+    cr.risk ? `${cr.risk} risk` : "",
+    cr.currentGate && cr.currentGate !== "None" ? `gate ${cr.currentGate}` : "",
+  ].filter(Boolean);
+  const people = [
+    cleanText(cr.owner) ? `owner ${cr.owner}` : "",
+    cleanText(cr.eccCoordinator) ? `ECC coordinator ${cr.eccCoordinator}` : "",
+    cleanText(cr.requester) ? `requester ${cr.requester}` : "",
+  ].filter(Boolean);
+  const dates = [
+    cr.targetDate ? `target ${cr.targetDate}` : "",
+    cr.documentationDeadline ? `docs due ${cr.documentationDeadline}` : "",
+    cr.meetingDate
+      ? `meeting ${cr.meetingDate}${cr.meetingTimeEst ? ` ${cr.meetingTimeEst}` : ""}`
+      : "",
+  ].filter(Boolean);
+  const scope = [
+    cleanText(cr.eccBoard) ? cr.eccBoard : "",
+    cleanText(cr.classification) && cr.classification !== "TBD"
+      ? cr.classification
+      : "",
+    cleanText(cr.system) ? cr.system : "",
+  ].filter(Boolean);
+  const workflow = [
+    cr.documentationNotificationStatus
+      ? `docs ${cr.documentationNotificationStatus}`
+      : "",
+    cr.preMeetingReviewStatus ? `pre-review ${cr.preMeetingReviewStatus}` : "",
+    cr.oocApprovalStatus ? `OOC ${cr.oocApprovalStatus}` : "",
+    cr.ncdocStatus ? `NCDOC ${cr.ncdocStatus}` : "",
+    cr.xclassStatus ? `xClass ${cr.xclassStatus}` : "",
+    cr.closureNotificationStatus ? `closure ${cr.closureNotificationStatus}` : "",
+  ].filter(Boolean);
+  const openActions = (cr.openActions ?? []).slice(0, 3);
+  const latestUpdate = cr.latestUpdates?.[0];
+  const lines = [
+    `${normalizeCrNumber(cr.crNumber ?? "") || "CR"}: ${title}`,
+    overview.length > 0 ? `Current state: ${overview.join("; ")}.` : "",
+    people.length > 0 ? `People: ${people.join("; ")}.` : "",
+    dates.length > 0 ? `Dates: ${dates.join("; ")}.` : "",
+    scope.length > 0 ? `Scope: ${scope.join("; ")}.` : "",
+    meaningfulText(cr.description)
+      ? `Description: ${truncateForAssistant(cr.description, 360)}`
+      : "",
+    meaningfulText(cr.businessImpact)
+      ? `Impact: ${truncateForAssistant(cr.businessImpact, 260)}`
+      : "",
+    meaningfulText(cr.disposition)
+      ? `Disposition: ${truncateForAssistant(cr.disposition, 220)}`
+      : "",
+    workflow.length > 0 ? `Workflow: ${workflow.join("; ")}.` : "",
+    openActions.length > 0
+      ? `Open actions: ${openActions
+          .map((action) =>
+            [
+              cleanText(action.gate) || "Action",
+              cleanText(action.owner) ? `owner ${action.owner}` : "",
+              cleanText(action.dueDate) ? `due ${action.dueDate}` : "",
+              truncateForAssistant(action.body, 120),
+            ]
+              .filter(Boolean)
+              .join(" - "),
+          )
+          .join("; ")}.`
+      : "",
+    latestUpdate && meaningfulText(latestUpdate.body)
+      ? `Latest update: ${truncateForAssistant(latestUpdate.body, 180)}`
+      : "",
+  ];
+
+  return lines.filter(Boolean).join("\n");
+}
+
+function meaningfulText(value: unknown) {
+  const text = cleanText(value);
+  const normalized = text.toLowerCase().replace(/[.\s]+$/g, "");
+  return (
+    text.length > 0 &&
+    !["not specified", "none", "n/a", "unknown", "no description provided"].includes(normalized)
+  );
+}
+
+function truncateForAssistant(value: unknown, maxLength: number) {
+  const text = cleanText(value);
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function findCrNumbers(value: string) {
+  return Array.from(value.matchAll(/\bCR[-\s_]*(\d{1,7})\b/gi)).map(
+    (match) => match[0],
+  );
+}
+
+function buildOwnerQuestionAnswer(
+  messages: IncomingMessage[],
+  context: AssistantContextRow[],
+  localOwner: string,
+) {
+  const latestUserMessage = findLastUserMessage(messages);
+  if (!latestUserMessage) {
+    return null;
+  }
+
+  const sourceText = latestUserMessage.content
+    .replace(/\[Screenshot attached\]/gi, "")
+    .trim();
+  if (!isOwnerQuestion(sourceText)) {
+    return null;
+  }
+
+  if (!localOwner) {
+    return "I can answer that, but your local owner name is not set. Set it in Settings so I know who 'myself' refers to.";
+  }
+
+  const ownerKey = personIdentityKey(localOwner);
+  const matches = context.filter((cr) =>
+    peopleLinkedToAssistantCr(cr).some(
+      (person) => personIdentityKey(person) === ownerKey,
+    ),
+  );
+
+  if (matches.length === 0) {
+    return `I did not find any active CRs linked to ${localOwner} in the current CR context.`;
+  }
+
+  const rows = matches
+    .slice(0, 12)
+    .map((cr) => {
+      const detailParts = [
+        cr.status,
+        cr.priority ? `${cr.priority} priority` : "",
+        cr.risk ? `${cr.risk} risk` : "",
+        cr.targetDate ? `target ${cr.targetDate}` : "",
+      ].filter(Boolean);
+      return `- ${cr.crNumber ?? "Unknown CR"}: ${cr.title ?? "Untitled"}${
+        detailParts.length > 0 ? ` (${detailParts.join(", ")})` : ""
+      }`;
+    })
+    .join("\n");
+  const truncated =
+    matches.length > 12 ? `\n\nShowing 12 of ${matches.length} matches.` : "";
+
+  return `I found ${matches.length} active CR${
+    matches.length === 1 ? "" : "s"
+  } linked to ${localOwner}:\n\n${rows}${truncated}`;
+}
+
+function isOwnerQuestion(value: string) {
+  const text = value.toLowerCase();
+  const mentionsCr = /\bcrs?\b|change requests?/.test(text);
+  const mentionsSelf =
+    /\b(my|mine|me|myself|assigned to myself|assigned to me)\b/.test(text);
+  const asksForList =
+    /\b(what|which|show|list|give|find|do i have|assigned)\b/.test(text);
+  return mentionsCr && mentionsSelf && asksForList;
+}
+
+function peopleLinkedToAssistantCr(cr: AssistantContextRow) {
+  return [
+    cr.owner ?? "",
+    cr.eccCoordinator ?? "",
+    cr.requester ?? "",
+    ...(cr.responsibleIpts ?? []),
+    ...(cr.quorum ?? []),
+  ].filter((person) => cleanText(person) && !isPlaceholderPerson(person));
+}
+
+function personIdentityKey(value: string) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9@.]+/g, " ")
+    .trim();
+}
+
+function isPlaceholderPerson(value: string) {
+  return ["unassigned", "unknown", "not set", "ipt", "collins user"].includes(
+    cleanText(value).toLowerCase(),
+  );
+}
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
 function parseAssistantWorkflowCommand(
   messages: IncomingMessage[],
   selectedCrNumber: string | null,
@@ -241,18 +839,24 @@ function parseAssistantWorkflowCommand(
     sourceText,
   );
   const mentionsOoc = /\b(?:ooc|out[-\s]?of[-\s]?cycle)\b/i.test(sourceText);
+  const mentionsActualClosure = isActualClosureStatus(sourceText);
   const hasActionIntent =
     /\b(?:push(?:ed)?|move(?:d)?|set|mark(?:ed)?|update(?:d)?|create(?:d)?|add(?:ed)?|put|send|sent|now|done|completed|previously)\b/i.test(
       sourceText,
     );
 
-  if ((!mentionsClosure && !mentionsOoc) || !hasActionIntent) {
+  if (
+    (!mentionsClosure && !mentionsOoc) ||
+    (!hasActionIntent && !mentionsActualClosure)
+  ) {
     return null;
   }
 
   const eccScope = extractEccScope(sourceText);
   const status = mentionsClosure
-    ? "Closed"
+    ? mentionsActualClosure
+      ? "Closed"
+      : "NCDOC/xClass"
     : mentionsOoc
       ? "Pending OOC Approvals"
       : undefined;
@@ -279,9 +883,26 @@ function parseAssistantWorkflowCommand(
     ...(mentionsOoc
       ? { oocApprovalStatus: oocComplete ? "Complete" : "In Progress" }
       : {}),
-    ...(mentionsClosure ? { closureNotificationStatus: "In Progress" } : {}),
+    ...(mentionsClosure
+      ? {
+          closureNotificationStatus: mentionsActualClosure
+            ? "Complete"
+            : "In Progress",
+        }
+      : {}),
     author: "Collins AI",
   };
+}
+
+function isActualClosureStatus(value: string) {
+  return /\b(?:actually|formally|fully|finally)\s+closed\b/i.test(value) ||
+    /\b(?:mark(?:ed)?|set|update(?:d)?)\s+(?:it\s+|this\s+|the\s+cr\s+)?(?:as\s+)?closed\b/i.test(
+      value,
+    ) ||
+    /\bclosure\s+(?:complete|completed|done|notification\s+(?:sent|complete|completed))\b/i.test(
+      value,
+    ) ||
+    /\bclosed\s+out\b/i.test(value);
 }
 
 function findLastUserMessage(messages: IncomingMessage[]) {
@@ -333,6 +954,9 @@ function buildWorkflowCommandTitle(
   if (status === "Closed") {
     return `${crNumber} - ${scope}closure`;
   }
+  if (status === "NCDOC/xClass") {
+    return `${crNumber} - ${scope}NCDOC/xClass`;
+  }
   if (status === "Pending OOC Approvals") {
     return `${crNumber} - ${scope}OOC`;
   }
@@ -345,7 +969,12 @@ function buildWorkflowCommandDisposition(
 ) {
   const scope = eccScope ? ` for ${eccScope}` : "";
   if (status === "Closed") {
-    return `Pushed to closure${scope}`;
+    return `Closed${scope}`;
+  }
+  if (status === "NCDOC/xClass") {
+    return `${
+      eccScope ? `In ${eccScope} records` : "In records"
+    }; NCDOC, xClass, and IPT notification pending`;
   }
   if (status === "Pending OOC Approvals") {
     return `Pending OOC approvals${scope}`;
@@ -364,7 +993,11 @@ function buildWorkflowActionAnswer(
     : "";
 
   if (command.status === "Closed") {
-    return `${action} ${result.crNumber} in All CRs and pushed it to the Closure phase${scope}.${previous} The workflow view will update from the CR register.`;
+    return `${action} ${result.crNumber} in All CRs and marked it closed${scope}.${previous} The workflow view will update from the CR register.`;
+  }
+
+  if (command.status === "NCDOC/xClass") {
+    return `${action} ${result.crNumber} in All CRs and moved it to NCDOC/xClass records work${scope}.${previous} It will not show closed until NCDOC, xClass, and IPT notification are complete.`;
   }
 
   if (command.status === "Pending OOC Approvals") {
