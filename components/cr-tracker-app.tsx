@@ -249,8 +249,10 @@ type LocalVoiceSession = {
   noiseFloor: number;
   calibrationFrames: number;
   voicedFrames: number;
+  rollingFrames: Float32Array[];
   preRollFrames: Float32Array[];
   speechFrames: Float32Array[];
+  peakRms: number;
   finalizing: boolean;
   cancelled: boolean;
 };
@@ -7227,7 +7229,7 @@ function AssistantPanel({
     const source = audioContext.createMediaStreamSource(stream);
     const processor = audioContext.createScriptProcessor(4096, 1, 1);
     const outputGain = audioContext.createGain();
-    outputGain.gain.value = 0;
+    outputGain.gain.value = 0.000001;
 
     const session: LocalVoiceSession = {
       mode,
@@ -7240,11 +7242,13 @@ function AssistantPanel({
       processedSamples: 0,
       speechStartedAt: null,
       lastSpeechAt: 0,
-      noiseFloor: 0.008,
+      noiseFloor: 0.0035,
       calibrationFrames: 0,
       voicedFrames: 0,
+      rollingFrames: [],
       preRollFrames: [],
       speechFrames: [],
+      peakRms: 0,
       finalizing: false,
       cancelled: false,
     };
@@ -7276,18 +7280,38 @@ function AssistantPanel({
     const now = (session.processedSamples / session.sampleRate) * 1000;
     session.processedSamples += frame.length;
     const rms = calculateRms(frame);
+    session.peakRms = Math.max(session.peakRms, rms);
+    session.rollingFrames.push(frame);
+    trimAudioFrames(
+      session.rollingFrames,
+      Math.round(session.sampleRate * (session.mode === "voice" ? 7 : 12)),
+    );
 
-    if (session.calibrationFrames < 10 && session.speechStartedAt === null) {
+    if (
+      session.calibrationFrames < 24 &&
+      session.speechStartedAt === null &&
+      rms < 0.025
+    ) {
       session.noiseFloor =
         session.calibrationFrames === 0
           ? rms
-          : session.noiseFloor * 0.82 + rms * 0.18;
+          : session.noiseFloor * 0.9 + rms * 0.1;
       session.calibrationFrames += 1;
     }
 
-    const startThreshold = Math.max(0.018, session.noiseFloor * 3.2);
-    const continueThreshold = Math.max(0.012, session.noiseFloor * 2.1);
-    const isVoice = rms >= (session.speechStartedAt ? continueThreshold : startThreshold);
+    const startThreshold = Math.max(
+      0.0035,
+      Math.min(0.035, session.noiseFloor * 2.2),
+    );
+    const continueThreshold = Math.max(
+      0.0028,
+      Math.min(0.028, session.noiseFloor * 1.45),
+    );
+    const isVoice =
+      rms >=
+      (session.speechStartedAt !== null
+        ? continueThreshold
+        : startThreshold);
 
     session.preRollFrames.push(frame);
     trimAudioFrames(
@@ -7302,13 +7326,20 @@ function AssistantPanel({
       session.voicedFrames = 0;
     }
 
+    let startedSpeechThisFrame = false;
     if (session.speechStartedAt === null && session.voicedFrames >= 2) {
       session.speechStartedAt = now;
       session.speechFrames.push(...session.preRollFrames);
       session.preRollFrames = [];
+      startedSpeechThisFrame = true;
+      setVoiceStatus(
+        session.mode === "voice"
+          ? "Heard you. Waiting for a pause..."
+          : "Heard you. Dictating...",
+      );
     }
 
-    if (session.speechStartedAt !== null) {
+    if (session.speechStartedAt !== null && !startedSpeechThisFrame) {
       session.speechFrames.push(frame);
       trimAudioFrames(
         session.speechFrames,
@@ -7317,15 +7348,37 @@ function AssistantPanel({
     }
 
     const speechDuration = session.speechStartedAt
+      !== null
       ? now - session.speechStartedAt
       : 0;
     const silenceDuration = session.lastSpeechAt ? now - session.lastSpeechAt : 0;
+    const fallbackMs = session.mode === "voice" ? 4_800 : 7_500;
+    const possibleSpeechThreshold = Math.max(0.002, session.noiseFloor * 1.25);
+    const shouldFallbackFinalize =
+      session.speechStartedAt === null &&
+      now > fallbackMs &&
+      session.peakRms >= possibleSpeechThreshold &&
+      session.rollingFrames.length > 0;
     const shouldFinalize =
-      session.speechStartedAt !== null &&
-      ((speechDuration > 450 && silenceDuration > 1_350) ||
-        speechDuration > 18_000);
+      shouldFallbackFinalize ||
+      (session.speechStartedAt !== null &&
+        ((speechDuration > 450 && silenceDuration > 1_350) ||
+          speechDuration > (session.mode === "voice" ? 14_000 : 24_000)));
 
     if (shouldFinalize) {
+      if (shouldFallbackFinalize) {
+        session.speechFrames = [...session.rollingFrames];
+        session.speechStartedAt = Math.max(
+          0,
+          now -
+            (session.speechFrames.reduce(
+              (total, currentFrame) => total + currentFrame.length,
+              0,
+            ) /
+              session.sampleRate) *
+              1000,
+        );
+      }
       void finalizeLocalVoiceSession(session);
     }
   }
