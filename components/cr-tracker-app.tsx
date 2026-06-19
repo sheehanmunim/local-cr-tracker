@@ -6702,6 +6702,7 @@ function AssistantPanel({
   const isDictating = voiceInputMode === "dictation";
   const isVoiceListening = voiceInputMode === "voice";
   const isVoiceActive = voiceChatActive || isVoiceListening || isVoiceSpeaking;
+  const isSpeechInputActive = isVoiceActive || isDictating;
   const canSendMessage = Boolean(input.trim() || attachment);
   const voiceSupported = useSyncExternalStore(
     subscribeToStaticStore,
@@ -6773,6 +6774,15 @@ function AssistantPanel({
     textArea.style.height = `${Math.min(textArea.scrollHeight, 128)}px`;
     textArea.style.overflowY = textArea.scrollHeight > 128 ? "auto" : "hidden";
   }, [input]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void warmLocalStt();
+      void warmLocalTts();
+    }, 1_250);
+
+    return () => window.clearTimeout(timer);
+  }, []);
 
   function clearVoiceRestartTimer() {
     if (voiceRestartTimerRef.current === null) {
@@ -6855,8 +6865,9 @@ function AssistantPanel({
       return;
     }
 
-    if (isVoiceActive) {
+    if (isSpeechInputActive) {
       stopVoiceChat("");
+      stopVoiceInput("");
     }
 
     const nextSession = createAssistantChatSession();
@@ -6886,8 +6897,9 @@ function AssistantPanel({
       return;
     }
 
-    if (isVoiceActive) {
+    if (isSpeechInputActive) {
       stopVoiceChat("");
+      stopVoiceInput("");
     }
 
     activeChatIdRef.current = session.id;
@@ -6919,8 +6931,9 @@ function AssistantPanel({
       return;
     }
 
-    if (isVoiceActive) {
+    if (isSpeechInputActive) {
       stopVoiceChat("");
+      stopVoiceInput("");
     }
 
     const nextSession = nextSessions[0];
@@ -7036,7 +7049,7 @@ function AssistantPanel({
     }
 
     event.preventDefault();
-    if (canSendMessage && !asking && !isVoiceActive) {
+    if (canSendMessage && !asking && !isSpeechInputActive) {
       void ask(input);
     }
   }
@@ -7049,6 +7062,28 @@ function AssistantPanel({
     recognitionRef.current = null;
     setVoiceInputMode("idle");
     setVoiceStatus(status);
+  }
+
+  function finishLocalVoiceInput(status = "Transcribing...") {
+    const session = localVoiceSessionRef.current;
+    if (!session) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        setVoiceStatus("Finishing dictation...");
+      } else {
+        setVoiceInputMode("idle");
+        setVoiceStatus("");
+      }
+      return;
+    }
+
+    const hasSpeechFrames = session.speechFrames.length > 0;
+    const hasRollingFrames = session.rollingFrames.length > 0;
+    if (!hasSpeechFrames && hasRollingFrames) {
+      session.speechFrames = [...session.rollingFrames];
+    }
+    setVoiceStatus(status);
+    void finalizeLocalVoiceSession(session);
   }
 
   function stopVoiceChat(status = "Voice mode ended.") {
@@ -7067,7 +7102,7 @@ function AssistantPanel({
     setVoiceStatus(status);
   }
 
-  function scheduleVoiceRestart(status = "Voice mode listening...") {
+  function scheduleVoiceRestart(status = "Listening...") {
     if (!voiceChatActiveRef.current) {
       return;
     }
@@ -7092,7 +7127,7 @@ function AssistantPanel({
     }
 
     clearVoiceSubmitTimer();
-    setVoiceStatus("Voice mode listening...");
+    setVoiceStatus("Listening...");
     voiceSubmitTimerRef.current = window.setTimeout(() => {
       voiceSubmitTimerRef.current = null;
       const prompt = voicePromptBufferRef.current.trim();
@@ -7142,7 +7177,7 @@ function AssistantPanel({
 
   function handleDictationToggle() {
     if (isDictating) {
-      stopVoiceInput("Dictation stopped.");
+      finishLocalVoiceInput();
       return;
     }
 
@@ -7184,7 +7219,7 @@ function AssistantPanel({
     stopSpokenAudio();
     setIsVoiceSpeaking(false);
     voicePromptSubmittingRef.current = false;
-    setVoiceStatus("Voice mode listening...");
+    setVoiceStatus("Listening...");
     startVoiceInput("voice");
   }
 
@@ -7263,8 +7298,8 @@ function AssistantPanel({
     setVoiceInputMode(mode);
     setVoiceStatus(
       mode === "voice"
-        ? "Voice mode listening locally..."
-        : "Dictating locally...",
+        ? "Listening..."
+        : "Dictating...",
     );
   }
 
@@ -7400,13 +7435,14 @@ function AssistantPanel({
     }
 
     try {
-      setVoiceStatus("Transcribing locally...");
+      setVoiceStatus("Transcribing...");
       const transcript = await transcribeLocalAudio(audio, session.sampleRate);
       const cleanedTranscript = transcript.trim();
       if (!cleanedTranscript) {
-        setVoiceStatus("Voice input did not catch that.");
         if (session.mode === "voice" && voiceChatActiveRef.current) {
-          scheduleVoiceRestart();
+          scheduleVoiceRestart("Listening...");
+        } else {
+          setVoiceStatus("Dictation did not catch that.");
         }
         return;
       }
@@ -7425,9 +7461,11 @@ function AssistantPanel({
       voicePromptBufferRef.current = "";
       void handleVoicePrompt(cleanedTranscript);
     } catch {
-      setVoiceStatus("Local transcription failed.");
       if (session.mode === "voice" && voiceChatActiveRef.current) {
-        scheduleVoiceRestart();
+        setVoiceStatus("Local transcription failed. Trying browser voice...");
+        startBrowserVoiceInput("voice");
+      } else {
+        setVoiceStatus("Local transcription failed.");
       }
     }
   }
@@ -7456,7 +7494,7 @@ function AssistantPanel({
 
     recognition.onstart = () => {
       setVoiceInputMode(mode);
-      setVoiceStatus(mode === "voice" ? "Voice mode listening..." : "Dictating...");
+      setVoiceStatus(mode === "voice" ? "Listening..." : "Dictating...");
     };
     recognition.onend = () => {
       recognitionRef.current = null;
@@ -7527,7 +7565,7 @@ function AssistantPanel({
       const finalPrompt = finalTranscript.trim();
       if (mode === "voice") {
         if (transcript) {
-          setVoiceStatus("Voice mode listening...");
+          setVoiceStatus("Listening...");
         }
         if (finalPrompt) {
           voicePromptBufferRef.current = [
@@ -7561,7 +7599,7 @@ function AssistantPanel({
   }
 
   async function handleVoicePrompt(prompt: string) {
-    setVoiceStatus("Voice mode thinking...");
+    setVoiceStatus("Thinking...");
     const answer = await ask(prompt, attachment, {
       keepVoiceStatus: true,
       mode: "voice",
@@ -7572,7 +7610,7 @@ function AssistantPanel({
     }
 
     if (answer) {
-      setVoiceStatus("Voice mode speaking...");
+      setVoiceStatus("Speaking...");
       setIsVoiceSpeaking(true);
       await speakText(answer);
       setIsVoiceSpeaking(false);
@@ -7830,7 +7868,9 @@ function AssistantPanel({
                 <button
                   type="button"
                   onClick={handleDictationToggle}
-                  disabled={!voiceSupported || asking || isVoiceActive}
+                  disabled={
+                    !voiceSupported || asking || (!isDictating && isVoiceActive)
+                  }
                   className={cn(
                     "inline-flex h-9 w-9 shrink-0 items-center justify-center border transition disabled:cursor-not-allowed disabled:opacity-50",
                     isDictating
@@ -7849,25 +7889,31 @@ function AssistantPanel({
                   <Mic className="h-4 w-4" />
                 </button>
                 <Button
-                  type={canSendMessage && !isVoiceActive ? "submit" : "button"}
+                  type={
+                    canSendMessage && !isSpeechInputActive ? "submit" : "button"
+                  }
                   size="icon"
                   onClick={
-                    canSendMessage && !isVoiceActive
+                    canSendMessage && !isSpeechInputActive
                       ? undefined
                       : handleVoiceChatToggle
                   }
                   disabled={
-                    isVoiceActive
-                      ? false
-                      : canSendMessage
-                        ? asking
-                        : !voiceSupported || asking
+                    isDictating
+                      ? true
+                      : isVoiceActive
+                        ? false
+                        : canSendMessage
+                          ? asking
+                          : !voiceSupported || asking
                   }
                   title={
-                    canSendMessage && !isVoiceActive
-                      ? "Send message"
-                      : voiceSupported
-                        ? isVoiceSpeaking
+                    isDictating
+                      ? "Finish dictation with the microphone button"
+                      : canSendMessage && !isSpeechInputActive
+                        ? "Send message"
+                        : voiceSupported
+                          ? isVoiceSpeaking
                           ? "Interrupt and listen"
                           : isVoiceActive
                             ? "End voice mode"
@@ -7875,9 +7921,11 @@ function AssistantPanel({
                         : "Voice input is not available in this browser"
                   }
                   aria-label={
-                    canSendMessage && !isVoiceActive
-                      ? "Send message"
-                      : isVoiceSpeaking
+                    isDictating
+                      ? "Finish dictation with the microphone button"
+                      : canSendMessage && !isSpeechInputActive
+                        ? "Send message"
+                        : isVoiceSpeaking
                         ? "Interrupt and listen"
                         : isVoiceActive
                           ? "End voice mode"
@@ -7890,7 +7938,7 @@ function AssistantPanel({
                 >
                   {asking && !isVoiceActive ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : canSendMessage && !isVoiceActive ? (
+                  ) : canSendMessage && !isSpeechInputActive ? (
                     <ArrowUp className="h-4 w-4" />
                   ) : (
                     <AudioLines
