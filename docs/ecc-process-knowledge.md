@@ -151,6 +151,75 @@ Military Supplier EC action and closeout rules:
   Coordinator that the validated PW EC constitutes customer approval of the HS
   CR.
 
+MS ECC waiver / CC-CII how-to rules from the local screenshots:
+
+- For MS ECC Option 1, after CC and CII are complete, the next work is records
+  closeout, not normal request-queue review. Make the ESA SAD and SAD VP
+  reports, create the NCDOC, complete xClass, and send the MS ECC closure email.
+- MS ECC Option 1 NCDOC naming uses the REA number rather than the generic CR
+  number when the REA is the controlling identifier.
+- The MS ECC Option 1 xClass classification attachments should use `Other 1`
+  for the ECC Waiver PDF and `Other 2` for both the OOC Approvals PDF and the
+  Waiver Approvals PDF.
+- The MS ECC closure email should say the Military Supplier ECC Process for the
+  CR has been submitted to xClass and closed out of ECC.
+- Do not send the normal CM information email for MS ECC final closeout. The
+  MS ECC closeout/xClass email is the final closure step for this process.
+- For the non-MS CC/CII waiver Option 2 path, create the NCDOC with the ECC
+  waiver as `Other 1`, complete xClass, send the closed-out-of-ECC email asking
+  for CM information, send the CR to CM with the received information, update
+  the CM Working List, tell the IPT to push the CR to workflow/In Review, and
+  then inform the IPT when it has been sent to CM.
+- Once an IPT submits the CR to workflow, PLM automatically updates release
+  status toward `In Work` or `In Review`; the IPT owns that submission.
+- If a CR is already through CC and CII but the CR record is missing locally,
+  Collins AI should create a local CR record or ask for the missing identifier
+  and title/description. It should not refuse just because the CR is not already
+  present in the local JSON context.
+
+Required MS ECC Option 1 package/check artifacts:
+
+- ECC OOC Approvals for MS ECC PDF.
+- Waiver Approvals PDF.
+- MS EC Checklist PDF.
+- ECC Waiver PDF.
+- NCDOC and xClass evidence.
+- Closed-out-of-ECC / submitted-to-xClass email.
+- ESA SAD and SAD VP reports.
+- 12028 form.
+- HSF-5280.03 / SECN form.
+- Supplier EC / CR Report HSF-0064.09 when Collins is the supplier.
+- Redlines where applicable, especially when another document is being updated.
+- SUB form HSF-0064.01.
+- AR form HSF-0735.00.
+
+Waiver package checks from the how-to:
+
+- Waiver form is the latest revision, has the correct CR number, active charge
+  number, Collins PN/spec confirmation, design authority location / cage code,
+  CO need-by or completion date, engine programs, component models, waived ECC
+  reviews, and required approvals for the waiver option and affected programs.
+- If the CO need-by/completion date is overdue, ask the IPT for a new date.
+- WU report lists all affected PNs on ChangeID/ItemID and revision. Verify
+  against the Collins PN on the waiver form and MP redlines.
+- Approval evidence should include the CR number, approver name, and enough
+  email-chain context to clearly show what is being waived.
+- AR form should be latest revision, have the CR number and WBS, and use the
+  New Document Releases / Document Relationship section only for brand new,
+  never-released documents.
+- In the ERP/SAP information table, use Part Numbers, not Drawing Numbers. List
+  each PN explicitly; grouped entries such as `#####-ALL` are not acceptable.
+- SUB form should be latest revision, have the CR number, export
+  classification, and WBS. Export classification is not complete until xClass
+  occurs.
+- Redline changes should align with the SUB form, and MP/redline approvals
+  should satisfy ESM3222.
+- An Industrial Cut Over Plan is required if a CR waives any combination of
+  Gates 1, 2, and 3.
+- COM-PC-60116-Mech-Design-CR-Checklist is required only for mechanical
+  changes. All questions in its `Compliant` column should be answered Yes or
+  No, and approvers should be present and correct.
+
 Military Supplier EC terms:
 
 - MS ECC: Military Supplier Engineering Change Council.

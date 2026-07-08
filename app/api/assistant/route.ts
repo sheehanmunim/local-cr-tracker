@@ -127,7 +127,7 @@ type WorkflowStatus =
   | "Pending OOC Approvals"
   | "CM Working List";
 
-type WorkflowTaskState = "Complete" | "In Progress";
+type WorkflowTaskState = "Complete" | "In Progress" | "Not Applicable";
 
 type AssistantClassification =
   | "TBD"
@@ -159,9 +159,12 @@ type AssistantWorkflowCommand = {
   disposition?: string;
   owner?: string;
   requester?: string;
+  waiverOption?: string | null;
   classification?: AssistantClassification;
   currentGate?: AssistantReviewGate;
   preMeetingReviewStatus?: WorkflowTaskState;
+  ncdocStatus?: WorkflowTaskState;
+  xclassStatus?: WorkflowTaskState;
   oocApprovalStatus?: WorkflowTaskState;
   closureNotificationStatus?: WorkflowTaskState;
   cmWorkingListStatus?: WorkflowTaskState;
@@ -933,6 +936,9 @@ function parseAssistantWorkflowCommand(
   const mentionsActualClosure = isActualClosureStatus(sourceText);
   const mentionsCreateCr = isAssistantCreateCrIntent(sourceText);
   const ccCiiComplete = isCcCiiCompleteStatus(sourceText);
+  const waiverOption = extractMsEccWaiverOption(sourceText);
+  const isMsEccOption1AfterCcCii =
+    mentionsCreateCr && waiverOption === "MS ECC Option 1" && ccCiiComplete;
   const hasActionIntent =
     /\b(?:push(?:ed)?|move(?:d)?|set|mark(?:ed)?|update(?:d)?|create(?:d)?|add(?:ed)?|put|send|sent|submit(?:ted)?|authoriz(?:e|ed)|queue(?:d)?|route(?:d)?|screen(?:ed)?|now|done|completed|previously)\b/i.test(
       sourceText,
@@ -957,8 +963,10 @@ function parseAssistantWorkflowCommand(
     ? "Closed"
     : mentionsCmWorkingList
       ? "CM Working List"
-      : mentionsCreateCr && ccCiiComplete
-        ? "Ready for Review"
+      : isMsEccOption1AfterCcCii
+        ? "NCDOC/xClass"
+        : mentionsCreateCr && ccCiiComplete
+          ? "Ready for Review"
         : mentionsClosure
         ? "NCDOC/xClass"
         : mentionsOoc
@@ -970,14 +978,21 @@ function parseAssistantWorkflowCommand(
       sourceText,
     );
   const previousWork =
-    oocComplete && mentionsClosure
+    isMsEccOption1AfterCcCii
+      ? "CC and CII"
+      : oocComplete && mentionsClosure
       ? `OOC${eccScope ? ` for ${eccScope}` : ""}`
       : undefined;
   const title = mentionsCreateCr
     ? extractAssistantCreateTitle(sourceText, crNumber, eccScope, status)
     : buildWorkflowCommandTitle(crNumber, status, eccScope);
   const disposition = mentionsCreateCr
-    ? buildCreateCommandDisposition(status, eccScope, ccCiiComplete)
+    ? buildCreateCommandDisposition(
+        status,
+        eccScope,
+        ccCiiComplete,
+        waiverOption,
+      )
     : buildWorkflowCommandDisposition(status, eccScope);
   const owner = cleanText(localOwner);
 
@@ -990,11 +1005,21 @@ function parseAssistantWorkflowCommand(
     ...(previousWork ? { previousWork } : {}),
     ...(disposition ? { disposition } : {}),
     ...(owner ? { owner, requester: owner } : {}),
+    ...(waiverOption ? { waiverOption } : {}),
     ...(ccCiiComplete
       ? {
           classification: "Class II" as const,
           currentGate: "CII" as const,
           preMeetingReviewStatus: "Complete" as const,
+        }
+      : {}),
+    ...(isMsEccOption1AfterCcCii
+      ? {
+          ncdocStatus: "In Progress" as const,
+          xclassStatus: "In Progress" as const,
+          oocApprovalStatus: "In Progress" as const,
+          closureNotificationStatus: "In Progress" as const,
+          cmWorkingListStatus: "Not Applicable" as const,
         }
       : {}),
     ...(mentionsOoc
@@ -1047,6 +1072,23 @@ function isCcCiiCompleteStatus(value: string) {
     );
 
   return mentionsCc && mentionsCii && mentionsComplete;
+}
+
+function extractMsEccWaiverOption(value: string) {
+  const normalized = cleanText(value);
+  if (!/\b(?:ms\s+ecc|military\s+supplier\s+ecc)\b/i.test(normalized)) {
+    return null;
+  }
+
+  if (/\boption\s*(?:1|one)\b/i.test(normalized)) {
+    return "MS ECC Option 1";
+  }
+
+  if (/\boption\s*(?:2|two)\b/i.test(normalized)) {
+    return "MS ECC Option 2";
+  }
+
+  return null;
 }
 
 function extractAssistantCreateTitle(
@@ -1106,7 +1148,14 @@ function buildCreateCommandDisposition(
   status: WorkflowStatus | undefined,
   eccScope: string,
   ccCiiComplete: boolean,
+  waiverOption: string | null,
 ) {
+  if (status === "NCDOC/xClass" && waiverOption === "MS ECC Option 1") {
+    return `MS ECC Option 1 records closeout${
+      eccScope ? ` for ${eccScope}` : ""
+    }; CC and CII complete; make SAD/SAD VP reports, create NCDOC, complete xClass, send MS ECC closeout email, no CM email`;
+  }
+
   if (status === "Ready for Review" && ccCiiComplete) {
     return `Ready for ECC review${
       eccScope ? ` for ${eccScope}` : ""
@@ -1258,6 +1307,13 @@ function buildWorkflowActionAnswer(
 
   if (command.status === "Closed") {
     return `${action} ${result.crNumber} in ${location} and marked it closed${scope}.${owner}${previous} The workflow view will update from the CR register.`;
+  }
+
+  if (
+    command.status === "NCDOC/xClass" &&
+    command.waiverOption === "MS ECC Option 1"
+  ) {
+    return `${action} ${result.crNumber} in ${location} and moved it into MS ECC Option 1 records/xClass closeout${scope}.${owner}${previous} It needs SAD/SAD VP reports, NCDOC, xClass Other 1/Other 2 uploads, and the MS ECC closeout email. CM Working List is not applicable for this final MS ECC closeout path.`;
   }
 
   if (command.status === "NCDOC/xClass") {

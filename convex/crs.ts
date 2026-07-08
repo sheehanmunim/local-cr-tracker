@@ -682,9 +682,12 @@ export const upsertFromAssistant = mutation({
     disposition: v.optional(v.string()),
     owner: v.optional(v.string()),
     requester: v.optional(v.string()),
+    waiverOption: v.optional(v.union(v.string(), v.null())),
     classification: v.optional(crClassification),
     currentGate: v.optional(reviewGate),
     preMeetingReviewStatus: v.optional(taskState),
+    ncdocStatus: v.optional(taskState),
+    xclassStatus: v.optional(taskState),
     oocApprovalStatus: v.optional(taskState),
     closureNotificationStatus: v.optional(taskState),
     cmWorkingListStatus: v.optional(taskState),
@@ -726,6 +729,15 @@ export const upsertFromAssistant = mutation({
       if (args.preMeetingReviewStatus !== undefined) {
         patch.preMeetingReviewStatus = args.preMeetingReviewStatus;
       }
+      if (args.ncdocStatus !== undefined) {
+        patch.ncdocStatus = args.ncdocStatus;
+      }
+      if (args.xclassStatus !== undefined) {
+        patch.xclassStatus = args.xclassStatus;
+      }
+      if (args.waiverOption !== undefined) {
+        patch.waiverOption = cleanNullableText(args.waiverOption);
+      }
       if (eccScope) {
         patch.category = eccScope;
         patch.system = eccScope;
@@ -755,7 +767,10 @@ export const upsertFromAssistant = mutation({
       );
       patch.tags = mergeTags(
         existing.tags,
-        assistantWorkflowTags(args.status, eccScope, previousWork),
+        [
+          ...assistantWorkflowTags(args.status, eccScope, previousWork),
+          args.waiverOption ?? "",
+        ],
       );
 
       await ctx.db.patch(existing._id, patch);
@@ -805,7 +820,10 @@ export const upsertFromAssistant = mutation({
       technicalNotes: previousWork
         ? `Previous work: ${previousWork}.`
         : "Created from Collins AI paste.",
-      tags: cleanTags(assistantWorkflowTags(status, eccScope, previousWork)),
+      tags: cleanTags([
+        ...assistantWorkflowTags(status, eccScope, previousWork),
+        args.waiverOption ?? "",
+      ]),
       eccBoard: inferEccBoard(eccScope ?? ""),
       classification: args.classification ?? "TBD",
       currentGate: args.currentGate ?? "None",
@@ -827,8 +845,8 @@ export const upsertFromAssistant = mutation({
       preMeetingReviewStatus: args.preMeetingReviewStatus ?? "Not Started",
       meetingAttendanceStatus: "Not Started",
       postMeetingPdfStatus: "Not Started",
-      ncdocStatus: "Not Started",
-      xclassStatus: "Not Started",
+      ncdocStatus: args.ncdocStatus ?? "Not Started",
+      xclassStatus: args.xclassStatus ?? "Not Started",
       oocApprovalStatus: args.oocApprovalStatus ?? "Not Started",
       chairApprovalStatus: "Not Started",
       closureNotificationStatus:
@@ -841,7 +859,10 @@ export const upsertFromAssistant = mutation({
       cmWorkingListStatus:
         args.cmWorkingListStatus ??
         (status === "CM Working List" ? "In Progress" : "Not Started"),
-      waiverOption: null,
+      waiverOption:
+        args.waiverOption === undefined
+          ? null
+          : cleanNullableText(args.waiverOption),
       designAuthority: "",
       disposition,
       eccCoordinator: cleanText(owner ?? "", ""),

@@ -571,10 +571,25 @@ const workflowMaxZoom = 1.5;
 const workflowZoomStep = 0.1;
 const workflowCurrentStepInitialZoom = 1;
 const msEccNcdocRequirements = [
+  "Separate MS ECC NCDOC from CC/CII and Supplier EC NCDOCs",
+  "Use REA number for Option 1 NCDOC naming when REA controls",
   "ECC waiver PDF",
   "OOC approvals PDF",
   "Waiver approvals PDF",
   "MS ECC Checklist PDF",
+  "ESA SAD and SAD VP reports for Option 1",
+  "12028, HSF-5280.03, SUB, AR, supplier EC, and redlines as applicable",
+];
+const msEccXclassRequirements = [
+  "ECC Waiver PDF attached as xClass Other 1",
+  "OOC Approvals PDF attached as xClass Other 2",
+  "Waiver Approvals PDF attached as xClass Other 2",
+  "Export classification complete before SUB form is final",
+];
+const msEccClosureRequirements = [
+  "Send email: MS ECC process submitted to xClass and closed out of ECC",
+  "Do not send normal CM information email for MS ECC final closeout",
+  "CM Working List is not applicable to MS ECC final closure",
 ];
 const cmWorkingListRequirements = [
   "CO completion date and program risk",
@@ -6202,15 +6217,17 @@ function getWorkflowDefinitionTasks(
       {
         label: "NCDOC",
         field: "ncdocStatus",
-        requirements: msEccNcdocRequirements,
+        requirements: getMsEccNcdocRequirements(cr),
       },
       {
         label: "xClass",
         field: "xclassStatus",
+        requirements: msEccXclassRequirements,
       },
       {
-        label: "Inform IPTs",
+        label: "MS ECC Closeout",
         field: "closureNotificationStatus",
+        requirements: msEccClosureRequirements,
       },
     ];
   }
@@ -6227,22 +6244,53 @@ function getWorkflowDefinitionTasks(
 }
 
 function isMilitarySupplierEccCr(cr: Cr) {
-  const values = [
-    cr.title,
-    cr.category,
-    cr.system,
-    cr.eccBoard ?? "",
-    cr.classGateMilitarySupplierEc ?? "",
-  ]
-    .join(" ")
-    .toLowerCase();
+  const values = getCrProcessText(cr);
 
   return (
     values.includes("ms ecc") ||
     values.includes("military supplier ecc") ||
-    values.includes("pwes military ecc") ||
-    values.includes("pwes military")
+    values.includes("military supplier ec") ||
+    values.includes("supplier ec") ||
+    values.includes("ec-60019")
   );
+}
+
+function isMsEccOption1Cr(cr: Cr) {
+  const values = getCrProcessText(cr);
+  return (
+    isMilitarySupplierEccCr(cr) &&
+    (values.includes("option 1") || values.includes("waiver option 1"))
+  );
+}
+
+function getMsEccNcdocRequirements(cr: Cr) {
+  if (isMsEccOption1Cr(cr)) {
+    return msEccNcdocRequirements;
+  }
+
+  return msEccNcdocRequirements.filter(
+    (requirement) =>
+      !requirement.includes("Option 1") &&
+      !requirement.includes("ESA SAD") &&
+      !requirement.includes("12028"),
+  );
+}
+
+function getCrProcessText(cr: Cr) {
+  return [
+    cr.title,
+    cr.category,
+    cr.system,
+    cr.description,
+    cr.technicalNotes,
+    cr.disposition ?? "",
+    cr.waiverOption ?? "",
+    cr.eccBoard ?? "",
+    cr.classGateMilitarySupplierEc ?? "",
+    cr.tags.join(" "),
+  ]
+    .join(" ")
+    .toLowerCase();
 }
 
 function getWorkflowTaskState(cr: Cr, field: TaskStateField): TaskState {
