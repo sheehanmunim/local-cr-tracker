@@ -981,6 +981,8 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   const [assistantView, setAssistantView] = useState<AssistantView>("closed");
   const [activeSection, setActiveSection] =
     useState<DashboardSection>("dashboard");
+  const [isWorkflowExpandedRequested, setIsWorkflowExpandedRequested] =
+    useState(false);
 
   useEffect(() => {
     function syncSidebarForViewport() {
@@ -1109,6 +1111,10 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     null;
   const requestLoading =
     activeSection === "archived" ? !archivedCrs : !crs;
+  const isWorkflowExpanded =
+    activeSection === "workflow" &&
+    Boolean(selectedCr) &&
+    isWorkflowExpandedRequested;
 
   const stats = useMemo(() => buildStats(crs ?? []), [crs]);
   const isAssistantOpen = assistantView !== "closed";
@@ -1257,30 +1263,34 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                         />
                       ) : activeSection === "workflow" ? (
                         <>
-                          <FilterBar
-                            owners={owners}
-                            statusFilter={statusFilter}
-                            priorityFilter={priorityFilter}
-                            riskFilter={riskFilter}
-                            boardFilter={boardFilter}
-                            classificationFilter={classificationFilter}
-                            ownerFilter={ownerFilter}
-                            search={search}
-                            onStatusFilterChange={setStatusFilter}
-                            onPriorityFilterChange={setPriorityFilter}
-                            onRiskFilterChange={setRiskFilter}
-                            onBoardFilterChange={setBoardFilter}
-                            onClassificationFilterChange={
-                              setClassificationFilter
-                            }
-                            onOwnerFilterChange={setOwnerFilter}
-                            onSearchChange={setSearch}
-                          />
+                          {!isWorkflowExpanded ? (
+                            <FilterBar
+                              owners={owners}
+                              statusFilter={statusFilter}
+                              priorityFilter={priorityFilter}
+                              riskFilter={riskFilter}
+                              boardFilter={boardFilter}
+                              classificationFilter={classificationFilter}
+                              ownerFilter={ownerFilter}
+                              search={search}
+                              onStatusFilterChange={setStatusFilter}
+                              onPriorityFilterChange={setPriorityFilter}
+                              onRiskFilterChange={setRiskFilter}
+                              onBoardFilterChange={setBoardFilter}
+                              onClassificationFilterChange={
+                                setClassificationFilter
+                              }
+                              onOwnerFilterChange={setOwnerFilter}
+                              onSearchChange={setSearch}
+                            />
+                          ) : null}
                           <WorkflowWorkspace
                             crs={filteredCrs}
                             loading={!crs}
                             selectedCr={selectedCr}
                             selectedId={selectedCr?._id ?? null}
+                            isExpanded={isWorkflowExpanded}
+                            onExpandedChange={setIsWorkflowExpandedRequested}
                             onSelect={setSelectedId}
                           />
                         </>
@@ -4162,29 +4172,29 @@ function WorkflowWorkspace({
   loading,
   selectedCr,
   selectedId,
+  isExpanded,
+  onExpandedChange,
   onSelect,
 }: {
   crs: Cr[];
   loading: boolean;
   selectedCr: Cr | null;
   selectedId: CrId | null;
+  isExpanded: boolean;
+  onExpandedChange: (value: boolean) => void;
   onSelect: (id: CrId) => void;
 }) {
-  const [isWorkflowExpandedRequested, setIsWorkflowExpandedRequested] =
-    useState(false);
-  const isWorkflowExpanded = Boolean(selectedCr) && isWorkflowExpandedRequested;
-
   return (
     <section id="workflow" className="space-y-5">
       <div
         className={cn(
           "grid gap-5",
-          isWorkflowExpanded
+          isExpanded
             ? "grid-cols-1"
             : "xl:grid-cols-[360px_minmax(0,1fr)]",
         )}
       >
-        {!isWorkflowExpanded ? (
+        {!isExpanded ? (
           <WorkflowCrPicker
             crs={crs}
             loading={loading}
@@ -4196,8 +4206,8 @@ function WorkflowWorkspace({
           key={selectedCr?._id ?? "workflow-chart"}
           cr={selectedCr}
           loading={loading}
-          isExpanded={isWorkflowExpanded}
-          onExpandedChange={setIsWorkflowExpandedRequested}
+          isExpanded={isExpanded}
+          onExpandedChange={onExpandedChange}
         />
       </div>
     </section>
