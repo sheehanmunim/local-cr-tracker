@@ -123,14 +123,16 @@ curl.exe -I https://models.fourechelon.com/ecc/gemma3-4b.gguf.parts/part-0000
 
 The launcher tries Node's built-in HTTPS client first, then retries mirror
 downloads through `curl`, then on Windows retries through PowerShell with a BITS
-fallback. These paths give corporate proxy settings, TLS inspection, and
-Windows-managed download policies a better chance of being honored. HTTP paths
-send a browser-like `User-Agent`, which can be overridden with
+fallback, then uses installed Chrome or Edge as an automatic download engine.
+These paths give corporate proxy settings, TLS inspection, and Windows-managed
+download policies a better chance of being honored. HTTP paths send a
+browser-like `User-Agent`, which can be overridden with
 `OLLAMA_MODEL_MIRROR_USER_AGENT` if a corporate proxy requires a specific
-allowlisted value.
+allowlisted value. If Chrome or Edge is installed in a non-standard location,
+set `OLLAMA_MODEL_BROWSER_PATH` to the executable path.
 
-If Chrome can download the chunk URL but Node, `curl`, PowerShell, or BITS all
-return 403, use the browser downloader:
+If automatic browser downloads are disabled or blocked, the same mirror also
+hosts a manual downloader:
 
 ```text
 https://models.fourechelon.com/ecc/model-downloader.html
@@ -140,6 +142,6 @@ Open that page in Chrome or Edge, select the cloned `local-cr-tracker` folder,
 and wait for it to save the configured artifacts into
 `.cache/ollama-models`. Then rerun `npm run local`. The launcher will validate
 and import those local GGUF files without downloading them through a blocked
-command-line process. In an interactive terminal, the launcher can also open
-this downloader automatically after command-line mirror downloads fail, then
-retry model setup after you press Enter.
+command-line process. Set `OLLAMA_MODEL_MANUAL_BROWSER_PROMPT=1` only if you
+want the launcher to pause and open that page automatically after all automatic
+download paths fail.

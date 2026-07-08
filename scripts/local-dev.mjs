@@ -54,6 +54,14 @@ const modelDownloadTimeoutMs = parsePositiveInteger(
 const modelMirrorUserAgent =
   process.env.OLLAMA_MODEL_MIRROR_USER_AGENT ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+const browserModelDownloadEnabled = parseBoolean(
+  process.env.OLLAMA_MODEL_BROWSER_DOWNLOAD,
+  true,
+);
+const manualBrowserDownloaderPromptEnabled = parseBoolean(
+  process.env.OLLAMA_MODEL_MANUAL_BROWSER_PROMPT,
+  false,
+);
 const npmCommand = process.env.npm_execpath
   ? process.execPath
   : process.platform === "win32"
@@ -491,6 +499,7 @@ async function promptForBrowserModelDownload(label) {
     browserDownloaderPromptShown ||
     !registryFallbackDisabled ||
     !modelMirrorBrowserDownloaderUrl ||
+    !manualBrowserDownloaderPromptEnabled ||
     !process.stdin.isTTY ||
     process.env.CI
   ) {
@@ -834,10 +843,20 @@ async function downloadFile(url, targetPath, redirectCount = 0) {
     try {
       await downloadFileWithCurl(url, targetPath, error);
     } catch (curlError) {
-      if (process.platform !== "win32") {
-        throw curlError;
+      let fallbackError = curlError;
+      if (process.platform === "win32") {
+        try {
+          await downloadFileWithPowerShell(url, targetPath, curlError);
+          return;
+        } catch (powerShellError) {
+          fallbackError = powerShellError;
+        }
       }
-      await downloadFileWithPowerShell(url, targetPath, curlError);
+
+      if (!shouldUseBrowserFallback(url)) {
+        throw fallbackError;
+      }
+      await downloadFileWithBrowser(url, targetPath, fallbackError);
     }
   }
 }
@@ -1009,6 +1028,291 @@ async function downloadFileWithPowerShell(url, targetPath, originalError) {
   fs.renameSync(tempPath, targetPath);
 }
 
+async function downloadFileWithBrowser(url, targetPath, originalError) {
+  const browserPath = findBrowserExecutable();
+  if (!browserPath) {
+    throw new Error(
+      `${formatErrorMessage(originalError)}; browser fallback failed: Chrome or Edge was not found`,
+    );
+  }
+
+  const targetDir = path.dirname(targetPath);
+  const fileName = path.basename(targetPath);
+  const profileDir = `${targetPath}.browser-profile`;
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.rmSync(targetPath, { force: true });
+  fs.rmSync(`${targetPath}.crdownload`, { force: true });
+  fs.rmSync(profileDir, { recursive: true, force: true });
+  writeBrowserDownloadPreferences(profileDir, targetDir);
+
+  console.log(`Retrying download through browser: ${url}`);
+  const startedAt = Date.now();
+  const child = spawn(browserPath, getBrowserDownloadArgs(profileDir, url), {
+    cwd: root,
+    detached: false,
+    shell: false,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  let exitCode = null;
+  child.on("exit", (code) => {
+    exitCode = code;
+  });
+
+  try {
+    await waitForBrowserDownload(
+      getBrowserDownloadDirs(targetDir),
+      fileName,
+      targetPath,
+      startedAt,
+      () => exitCode,
+    );
+  } catch (error) {
+    throw new Error(
+      `${formatErrorMessage(originalError)}; browser fallback failed: ${formatErrorMessage(error)}`,
+    );
+  } finally {
+    stopBrowserProcess(child);
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+}
+
+function writeBrowserDownloadPreferences(profileDir, downloadDir) {
+  const defaultDir = path.join(profileDir, "Default");
+  fs.mkdirSync(defaultDir, { recursive: true });
+  const preferences = {
+    browser: {
+      check_default_browser: false,
+    },
+    download: {
+      default_directory: downloadDir,
+      directory_upgrade: true,
+      prompt_for_download: false,
+    },
+    profile: {
+      default_content_setting_values: {
+        automatic_downloads: 1,
+      },
+    },
+  };
+  fs.writeFileSync(
+    path.join(defaultDir, "Preferences"),
+    JSON.stringify(preferences),
+  );
+}
+
+function getBrowserDownloadArgs(profileDir, url) {
+  return [
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-default-apps",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-popup-blocking",
+    "--start-minimized",
+    url,
+  ];
+}
+
+function getBrowserDownloadDirs(preferredDir) {
+  return unique([preferredDir, path.join(os.homedir(), "Downloads")]).filter(
+    (downloadDir) => fs.existsSync(downloadDir),
+  );
+}
+
+async function waitForBrowserDownload(
+  downloadDirs,
+  fileName,
+  targetPath,
+  startedAt,
+  getExitCode,
+) {
+  let lastSize = -1;
+  let stableSince = 0;
+
+  while (Date.now() - startedAt < modelDownloadTimeoutMs) {
+    const downloadedPath = findBrowserDownloadedFile(
+      downloadDirs,
+      fileName,
+      startedAt,
+    );
+    const partialDownloads = findBrowserPartialDownloads(
+      downloadDirs,
+      fileName,
+      startedAt,
+    );
+
+    if (downloadedPath && partialDownloads.length === 0) {
+      const size = fs.statSync(downloadedPath).size;
+      if (size > 0 && size === lastSize) {
+        if (Date.now() - stableSince >= 1500) {
+          if (downloadedPath !== targetPath) {
+            moveFileSync(downloadedPath, targetPath);
+          }
+          return;
+        }
+      } else {
+        lastSize = size;
+        stableSince = Date.now();
+      }
+    }
+
+    const exitCode = getExitCode();
+    if (exitCode !== null && !downloadedPath && partialDownloads.length === 0) {
+      throw new Error(`browser exited before downloading ${fileName}`);
+    }
+
+    await sleep(1000);
+  }
+
+  throw new Error(`timed out waiting for ${fileName}`);
+}
+
+function findBrowserDownloadedFile(downloadDirs, fileName, startedAt) {
+  const duplicatePattern = new RegExp(
+    `^${escapeRegExp(fileName)}(?: \\(\\d+\\))?$`,
+  );
+
+  for (const downloadDir of downloadDirs) {
+    for (const entry of fs.readdirSync(downloadDir)) {
+      if (!duplicatePattern.test(entry)) {
+        continue;
+      }
+      const candidate = path.join(downloadDir, entry);
+      const stat = fs.statSync(candidate);
+      if (stat.isFile() && stat.mtimeMs >= startedAt - 2000) {
+        return candidate;
+      }
+    }
+  }
+
+  return "";
+}
+
+function findBrowserPartialDownloads(downloadDirs, fileName, startedAt) {
+  return downloadDirs.flatMap((downloadDir) =>
+    fs
+      .readdirSync(downloadDir)
+      .filter(
+        (entry) => {
+          if (
+            !entry.startsWith(fileName) ||
+            (!entry.endsWith(".crdownload") && !entry.endsWith(".tmp"))
+          ) {
+            return false;
+          }
+          return fs.statSync(path.join(downloadDir, entry)).mtimeMs >= startedAt - 2000;
+        },
+      )
+      .map((entry) => path.join(downloadDir, entry)),
+  );
+}
+
+function moveFileSync(sourcePath, targetPath) {
+  try {
+    fs.renameSync(sourcePath, targetPath);
+  } catch (error) {
+    if (error.code !== "EXDEV") {
+      throw error;
+    }
+    fs.copyFileSync(sourcePath, targetPath);
+    fs.rmSync(sourcePath, { force: true });
+  }
+}
+
+function stopBrowserProcess(child) {
+  if (!child.pid || child.exitCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+    return;
+  }
+
+  child.kill("SIGTERM");
+}
+
+function findBrowserExecutable() {
+  const configured = [
+    process.env.OLLAMA_MODEL_BROWSER_PATH,
+    process.env.CHROME_PATH,
+    process.env.EDGE_PATH,
+  ].find((value) => typeof value === "string" && value.trim());
+  if (configured && fs.existsSync(configured.trim())) {
+    return configured.trim();
+  }
+
+  const candidates =
+    process.platform === "win32"
+      ? getWindowsBrowserCandidates()
+      : process.platform === "darwin"
+        ? getMacBrowserCandidates()
+        : getLinuxBrowserCandidates();
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "";
+}
+
+function getWindowsBrowserCandidates() {
+  const programFiles = [
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+    process.env.LOCALAPPDATA,
+  ].filter(Boolean);
+  return [
+    ...programFiles.flatMap((basePath) => [
+      path.join(basePath, "Google", "Chrome", "Application", "chrome.exe"),
+      path.join(basePath, "Microsoft", "Edge", "Application", "msedge.exe"),
+    ]),
+    ...findCommands(["chrome.exe", "msedge.exe"]),
+  ];
+}
+
+function getMacBrowserCandidates() {
+  return [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ...findCommands(["google-chrome", "microsoft-edge", "chromium"]),
+  ];
+}
+
+function getLinuxBrowserCandidates() {
+  return findCommands([
+    "google-chrome",
+    "google-chrome-stable",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "chromium",
+    "chromium-browser",
+  ]);
+}
+
+function findCommands(commands) {
+  const lookupCommand = process.platform === "win32" ? "where.exe" : "which";
+  return commands.flatMap((command) => {
+    const result = spawnSync(lookupCommand, [command], {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      timeout: 5_000,
+    });
+    if (result.status !== 0 || typeof result.stdout !== "string") {
+      return [];
+    }
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  });
+}
+
 function shouldUseCurlFallback(url, error) {
   if (!/^https?:\/\//i.test(url)) {
     return false;
@@ -1025,6 +1329,14 @@ function shouldUseCurlFallback(url, error) {
     message.includes("unable to verify") ||
     message.includes("certificate")
   );
+}
+
+function shouldUseBrowserFallback(url) {
+  return browserModelDownloadEnabled && /^https?:\/\//i.test(url) && isMirrorUrl(url);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function getRequestOptions(url) {

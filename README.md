@@ -153,12 +153,10 @@ the mirror, startup fails with the exact local path and mirror object name to
 upload instead of attempting Ollama's public registry.
 
 Some corporate endpoint policies allow Chrome downloads from the mirror while
-blocking Node, `curl`, PowerShell, and BITS. In that case, open
-`https://models.fourechelon.com/ecc/model-downloader.html` in Chrome or Edge,
-select the cloned repo folder, let it save the GGUF files into
-`.cache/ollama-models`, and rerun `npm run local`. In an interactive terminal,
-`npm run local` will open that page and wait for you to press Enter before
-retrying model setup.
+blocking Node, `curl`, PowerShell, and BITS. In that case, `npm run local`
+launches Chrome or Edge as the download engine, saves chunks into
+`.cache/ollama-models`, reassembles the GGUF file, and imports it into Ollama
+without requiring folder selection.
 
 To use Cloudflare R2 or another object store, upload the GGUF file under that
 same object name and set:
