@@ -195,6 +195,7 @@ export default defineSchema({
     y: v.number(),
     updatedAt: v.number(),
   })
+    .index("by_crId", ["crId"])
     .index("by_userKey", ["userKey"])
     .index("by_userKey_and_crId", ["userKey", "crId"]),
 });

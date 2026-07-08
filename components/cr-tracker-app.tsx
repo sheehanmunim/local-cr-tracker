@@ -43,6 +43,7 @@ import {
   SlidersHorizontal,
   StickyNote,
   Table2,
+  Trash2,
   Upload,
   UserRound,
   X,
@@ -1176,6 +1177,13 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     setNotice(`${crNumber} restored from archive.`);
   }
 
+  function handleArchivedCrDeleted(crNumber: string) {
+    setSelectedId(null);
+    setScope("archived");
+    setActiveSection("archived");
+    setNotice(`${crNumber} deleted permanently.`);
+  }
+
   return (
     <div
       ref={appShellRef}
@@ -1309,6 +1317,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                           onOwnerFilterChange={setOwnerFilter}
                           onSearchChange={setSearch}
                           onRestored={handleArchivedCrRestored}
+                          onDeleted={handleArchivedCrDeleted}
                           onKanbanStatusChange={(cr, status) =>
                             void handleKanbanStatusChange(cr, status)
                           }
@@ -1984,6 +1993,7 @@ function RequestWorkspace({
   onOwnerFilterChange,
   onSearchChange,
   onRestored,
+  onDeleted,
   onKanbanStatusChange,
 }: {
   crs: Cr[];
@@ -2012,6 +2022,7 @@ function RequestWorkspace({
   onOwnerFilterChange: (value: string) => void;
   onSearchChange: (value: string) => void;
   onRestored: (id: CrId, crNumber: string) => void;
+  onDeleted: (crNumber: string) => void;
   onKanbanStatusChange: (cr: Cr, status: CrStatus) => void;
 }) {
   const selectedId = selectedCr?._id ?? null;
@@ -2063,6 +2074,7 @@ function RequestWorkspace({
             cr={selectedCr}
             peopleOptions={peopleOptions}
             onRestored={onRestored}
+            onDeleted={onDeleted}
           />
         </section>
       ) : scope === "archived" ? (
@@ -2082,6 +2094,7 @@ function RequestWorkspace({
             cr={selectedCr}
             peopleOptions={peopleOptions}
             onRestored={onRestored}
+            onDeleted={onDeleted}
           />
         </section>
       ) : viewMode === "excel" ? (
@@ -5604,16 +5617,19 @@ function CrDetails({
   peopleOptions = [],
   onClose,
   onRestored,
+  onDeleted,
 }: {
   cr: Cr | null;
   peopleOptions?: string[];
   onClose?: () => void;
   onRestored?: (id: CrId, crNumber: string) => void;
+  onDeleted?: (crNumber: string) => void;
 }) {
   const updateCr = useMutation(api.crs.update);
   const addUpdate = useMutation(api.crs.addUpdate);
   const archiveCr = useMutation(api.crs.archive);
   const restoreCr = useMutation(api.crs.restore);
+  const deleteArchivedCr = useMutation(api.crs.deleteArchived);
   const addAction = useMutation(api.crs.addAction);
   const updateActionStatus = useMutation(api.crs.updateActionStatus);
   const addApproval = useMutation(api.crs.addApproval);
@@ -5631,6 +5647,8 @@ function CrDetails({
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
 
   if (!cr) {
     return (
@@ -5719,6 +5737,36 @@ function CrDetails({
     }
   }
 
+  async function handleDeleteArchived(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!cr) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await deleteArchivedCr({
+        id: cr._id,
+        confirmationCrNumber: deleteConfirmation,
+      });
+      setIsDeleteConfirmOpen(false);
+      setDeleteConfirmation("");
+      onDeleted?.(cr.crNumber);
+      onClose?.();
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Unable to delete archived CR.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const deleteConfirmationMatches =
+    normalizeCrNumber(deleteConfirmation) === cr.crNumber;
+
   return (
     <section className={cn(panelShell, "overflow-hidden")}>
       <div className={panelHeader}>
@@ -5756,10 +5804,25 @@ function CrDetails({
               </Button>
             ) : null}
             {cr.isArchived ? (
-              <Button variant="outline" size="sm" onClick={handleRestore}>
-                <ArchiveRestore className="h-4 w-4" />
-                Restore
-              </Button>
+              <>
+                <Button variant="outline" size="sm" onClick={handleRestore}>
+                  <ArchiveRestore className="h-4 w-4" />
+                  Restore
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-rose-200 text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                  onClick={() => {
+                    setDeleteConfirmation("");
+                    setIsDeleteConfirmOpen(true);
+                    setError("");
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </Button>
+              </>
             ) : (
               <Button variant="outline" size="sm" onClick={handleArchive}>
                 <Archive className="h-4 w-4" />
@@ -5856,6 +5919,74 @@ function CrDetails({
           </div>
         </div>
       </div>
+
+      {isDeleteConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm"
+          onMouseDown={() => {
+            if (!saving) {
+              setIsDeleteConfirmOpen(false);
+              setDeleteConfirmation("");
+            }
+          }}
+        >
+          <form
+            className="w-full max-w-md rounded-lg border border-rose-200 bg-white p-5 shadow-2xl"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={handleDeleteArchived}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-rose-50 text-rose-700">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-slate-950">
+                  Delete {cr.crNumber} permanently?
+                </h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  This removes the archived CR plus its notes, actions,
+                  approvals, and whiteboard positions. This cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <label className="mt-5 block text-sm font-medium text-slate-700">
+              Type {cr.crNumber} to confirm
+            </label>
+            <Input
+              className="mt-2"
+              value={deleteConfirmation}
+              onChange={(event) => setDeleteConfirmation(event.target.value)}
+              autoFocus
+            />
+            {error ? (
+              <p className="mt-2 text-sm font-medium text-rose-700">{error}</p>
+            ) : null}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsDeleteConfirmOpen(false);
+                  setDeleteConfirmation("");
+                }}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="destructive"
+                disabled={saving || !deleteConfirmationMatches}
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Delete
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }

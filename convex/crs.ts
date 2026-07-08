@@ -966,6 +966,74 @@ export const restore = mutation({
   },
 });
 
+export const deleteArchived = mutation({
+  args: {
+    id: v.id("crs"),
+    confirmationCrNumber: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await requireAuthenticated(ctx);
+
+    const cr = await ctx.db.get(args.id);
+    if (!cr) {
+      throw new Error("CR not found.");
+    }
+    if (!cr.isArchived) {
+      throw new Error("Archive the CR before deleting it permanently.");
+    }
+
+    const confirmationCrNumber = cleanCrNumber(args.confirmationCrNumber);
+    if (confirmationCrNumber !== cr.crNumber) {
+      throw new Error(`Type ${cr.crNumber} to delete this CR permanently.`);
+    }
+
+    const maxRelatedRows = 500;
+    const updates = await ctx.db
+      .query("crUpdates")
+      .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.id))
+      .take(maxRelatedRows);
+    const actions = await ctx.db
+      .query("crActions")
+      .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.id))
+      .take(maxRelatedRows);
+    const approvals = await ctx.db
+      .query("crApprovals")
+      .withIndex("by_crId_and_createdAt", (q) => q.eq("crId", args.id))
+      .take(maxRelatedRows);
+    const positions = await ctx.db
+      .query("crWhiteboardPositions")
+      .withIndex("by_crId", (q) => q.eq("crId", args.id))
+      .take(maxRelatedRows);
+
+    if (
+      updates.length >= maxRelatedRows ||
+      actions.length >= maxRelatedRows ||
+      approvals.length >= maxRelatedRows ||
+      positions.length >= maxRelatedRows
+    ) {
+      throw new Error(
+        "This CR has too many related records to delete in one operation.",
+      );
+    }
+
+    for (const update of updates) {
+      await ctx.db.delete(update._id);
+    }
+    for (const action of actions) {
+      await ctx.db.delete(action._id);
+    }
+    for (const approval of approvals) {
+      await ctx.db.delete(approval._id);
+    }
+    for (const position of positions) {
+      await ctx.db.delete(position._id);
+    }
+
+    await ctx.db.delete(args.id);
+    return { crNumber: cr.crNumber };
+  },
+});
+
 export const listActions = query({
   args: { crId: v.id("crs") },
   handler: async (ctx, args) => {
