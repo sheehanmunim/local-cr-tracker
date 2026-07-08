@@ -128,3 +128,16 @@ Windows-managed download policies a better chance of being honored. HTTP paths
 send a browser-like `User-Agent`, which can be overridden with
 `OLLAMA_MODEL_MIRROR_USER_AGENT` if a corporate proxy requires a specific
 allowlisted value.
+
+If Chrome can download the chunk URL but Node, `curl`, PowerShell, or BITS all
+return 403, use the browser downloader:
+
+```text
+https://models.fourechelon.com/ecc/model-downloader.html
+```
+
+Open that page in Chrome or Edge, select the cloned `local-cr-tracker` folder,
+and wait for it to save the configured artifacts into
+`.cache/ollama-models`. Then rerun `npm run local`. The launcher will validate
+and import those local GGUF files without downloading them through a blocked
+command-line process.

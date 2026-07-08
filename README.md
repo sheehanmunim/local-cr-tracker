@@ -152,6 +152,12 @@ the Cloudflare/custom mirror path only. If a required artifact is missing from
 the mirror, startup fails with the exact local path and mirror object name to
 upload instead of attempting Ollama's public registry.
 
+Some corporate endpoint policies allow Chrome downloads from the mirror while
+blocking Node, `curl`, PowerShell, and BITS. In that case, open
+`https://models.fourechelon.com/ecc/model-downloader.html` in Chrome or Edge,
+select the cloned repo folder, let it save the GGUF files into
+`.cache/ollama-models`, and rerun `npm run local`.
+
 To use Cloudflare R2 or another object store, upload the GGUF file under that
 same object name and set:
 

@@ -39,6 +39,9 @@ const modelArtifactDir = path.resolve(
 const modelMirrorBaseUrl = normalizeOptionalUrl(
   process.env.OLLAMA_MODEL_MIRROR_BASE_URL || modelConfig.mirrorBaseUrl,
 );
+const modelMirrorBrowserDownloaderUrl = modelMirrorBaseUrl
+  ? joinUrl(modelMirrorBaseUrl, "model-downloader.html")
+  : "";
 const registryFallbackDisabled = parseBoolean(
   process.env.OLLAMA_DISABLE_REGISTRY_FALLBACK,
   Boolean(modelConfig.disableRegistryFallback),
@@ -441,11 +444,17 @@ function formatRegistryFallbackDisabledMessage(name, artifact) {
   const mirrorMessage = modelMirrorBaseUrl
     ? `or upload ${artifact.remotePath} to ${modelMirrorBaseUrl}`
     : "or configure OLLAMA_MODEL_MIRROR_BASE_URL";
-  return [
+  const parts = [
     `Skipping ollama pull for ${name} because registry fallback is disabled.`,
     `Put the artifact at ${artifact.path}, ${mirrorMessage}.`,
     "Set OLLAMA_DISABLE_REGISTRY_FALLBACK=0 to allow pulling from Ollama for this run.",
-  ].join(" ");
+  ];
+  if (modelMirrorBrowserDownloaderUrl) {
+    parts.push(
+      `If Chrome can download model chunks but command-line tools cannot, open ${modelMirrorBrowserDownloaderUrl} and select this repo folder.`,
+    );
+  }
+  return parts.join(" ");
 }
 
 function formatModelInstallFailure(label) {
@@ -454,11 +463,17 @@ function formatModelInstallFailure(label) {
   }
 
   const mirror = modelMirrorBaseUrl || "the configured model mirror";
-  return [
+  const parts = [
     `Could not install any local ${label} model from installed Ollama models, local GGUF artifacts, or ${mirror}.`,
     "Registry fallback is disabled to support corporate networks.",
     "Upload the missing GGUF artifacts to the mirror or set OLLAMA_DISABLE_REGISTRY_FALLBACK=0 to allow ollama pull.",
-  ].join(" ");
+  ];
+  if (modelMirrorBrowserDownloaderUrl) {
+    parts.push(
+      `If Chrome is allowed but Node, curl, or PowerShell are blocked, predownload the artifacts at ${modelMirrorBrowserDownloaderUrl}.`,
+    );
+  }
+  return parts.join(" ");
 }
 
 function getModelArtifact(name) {
