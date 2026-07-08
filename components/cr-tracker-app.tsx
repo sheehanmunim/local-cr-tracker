@@ -4170,19 +4170,34 @@ function WorkflowWorkspace({
   selectedId: CrId | null;
   onSelect: (id: CrId) => void;
 }) {
+  const [isWorkflowExpandedRequested, setIsWorkflowExpandedRequested] =
+    useState(false);
+  const isWorkflowExpanded = Boolean(selectedCr) && isWorkflowExpandedRequested;
+
   return (
     <section id="workflow" className="space-y-5">
-      <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
-        <WorkflowCrPicker
-          crs={crs}
-          loading={loading}
-          selectedId={selectedId}
-          onSelect={onSelect}
-        />
+      <div
+        className={cn(
+          "grid gap-5",
+          isWorkflowExpanded
+            ? "grid-cols-1"
+            : "xl:grid-cols-[360px_minmax(0,1fr)]",
+        )}
+      >
+        {!isWorkflowExpanded ? (
+          <WorkflowCrPicker
+            crs={crs}
+            loading={loading}
+            selectedId={selectedId}
+            onSelect={onSelect}
+          />
+        ) : null}
         <WorkflowChart
           key={selectedCr?._id ?? "workflow-chart"}
           cr={selectedCr}
           loading={loading}
+          isExpanded={isWorkflowExpanded}
+          onExpandedChange={setIsWorkflowExpandedRequested}
         />
       </div>
     </section>
@@ -4275,19 +4290,23 @@ function WorkflowCrPicker({
   );
 }
 
-function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
+function WorkflowChart({
+  cr,
+  loading,
+  isExpanded,
+  onExpandedChange,
+}: {
+  cr: Cr | null;
+  loading: boolean;
+  isExpanded: boolean;
+  onExpandedChange: (value: boolean) => void;
+}) {
   const updateCr = useMutation(api.crs.update);
-  const workflowPanelRef = useRef<HTMLElement>(null);
   const workflowViewportRef = useRef<HTMLDivElement>(null);
   const workflowCanvasShellRef = useRef<HTMLDivElement>(null);
   const workflowPanRef = useRef<WorkflowPanState | null>(null);
   const workflowPhaseDragRef = useRef<WorkflowPhaseDragState | null>(null);
   const focusedWorkflowStepRef = useRef<string | null>(null);
-  const {
-    fullscreenSupported: isWorkflowFullscreenSupported,
-    isFullscreen: isWorkflowFullscreen,
-    toggleFullscreen: toggleWorkflowFullscreen,
-  } = useFullscreenTarget(workflowPanelRef);
   const [savingTaskField, setSavingTaskField] = useState<TaskStateField | null>(
     null,
   );
@@ -4411,7 +4430,7 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
     };
   }, [
     fitMode,
-    isWorkflowFullscreen,
+    isExpanded,
     workflowCanvasSize.height,
     workflowCanvasSize.width,
   ]);
@@ -4443,7 +4462,7 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
     currentWorkflowFocusKey,
     currentWorkflowPhaseItem,
     fitMode,
-    isWorkflowFullscreen,
+    isExpanded,
   ]);
 
   useEffect(() => {
@@ -4712,11 +4731,10 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
 
   return (
     <section
-      ref={workflowPanelRef}
       className={cn(
         panelShell,
-        "flex min-h-[580px] flex-col overflow-hidden bg-white",
-        isWorkflowFullscreen && "h-screen min-h-0 border-0",
+        "flex flex-col overflow-hidden bg-white",
+        isExpanded ? "h-[calc(100vh-12rem)] min-h-[580px]" : "min-h-[580px]",
       )}
     >
       <div className={cn(panelHeader, "shrink-0")}>
@@ -4743,28 +4761,21 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
             </div>
             <button
               type="button"
-              onClick={() => void toggleWorkflowFullscreen()}
-              disabled={!isWorkflowFullscreenSupported}
+              onClick={() => onExpandedChange(!isExpanded)}
               className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center border transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950 disabled:cursor-not-allowed disabled:opacity-40",
-                isWorkflowFullscreen
+                "flex h-9 w-9 shrink-0 items-center justify-center border transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-950",
+                isExpanded
                   ? "border-gray-950 bg-gray-950 text-white hover:bg-gray-900 hover:text-white"
                   : "border-gray-200 bg-white text-gray-700",
               )}
               aria-label={
-                isWorkflowFullscreen
-                  ? "Exit workflow fullscreen"
-                  : "Fullscreen workflow"
+                isExpanded ? "Collapse workflow view" : "Expand workflow view"
               }
               title={
-                isWorkflowFullscreenSupported
-                  ? isWorkflowFullscreen
-                    ? "Exit workflow fullscreen"
-                    : "Fullscreen workflow"
-                  : "Fullscreen is unavailable"
+                isExpanded ? "Collapse workflow view" : "Expand workflow in view"
               }
             >
-              {isWorkflowFullscreen ? (
+              {isExpanded ? (
                 <Minimize2 className="h-4 w-4" />
               ) : (
                 <Maximize2 className="h-4 w-4" />
@@ -4791,7 +4802,7 @@ function WorkflowChart({ cr, loading }: { cr: Cr | null; loading: boolean }) {
         onPointerCancel={stopWorkflowPan}
         className={cn(
           "relative overflow-auto bg-white",
-          isWorkflowFullscreen
+          isExpanded
             ? "min-h-0 flex-1"
             : "h-[500px] max-h-[500px] min-h-0 shrink-0",
           isPanningWorkflow ? "cursor-grabbing" : "cursor-grab",
