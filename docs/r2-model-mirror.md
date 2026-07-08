@@ -62,7 +62,7 @@ Production-friendly setup uses a custom domain that is already in the same
 Cloudflare account as the R2 bucket:
 
 ```bash
-npm run models:r2 -- --bucket ecc-local-models --domain models.example.com --prefix ecc
+npm run models:r2 -- --bucket ecc-local-models --domain models.fourechelon.com --prefix ecc
 ```
 
 That command will:
@@ -84,7 +84,7 @@ Fresh clones will then use the R2 mirror automatically.
 After replacing or adding files under `.cache/ollama-models`, upload again:
 
 ```bash
-npm run models:r2:upload -- --bucket ecc-local-models --mirror-url https://models.example.com/ecc
+npm run models:r2:upload -- --bucket ecc-local-models --mirror-url https://models.fourechelon.com/ecc
 ```
 
 The upload is resumable. If it is interrupted, rerun the same command; existing
@@ -93,7 +93,7 @@ remote chunks with the expected size are skipped.
 To only save the public mirror URL into local env and committed config:
 
 ```bash
-npm run models:r2:env -- --mirror-url https://models.example.com/ecc
+npm run models:r2:env -- --mirror-url https://models.fourechelon.com/ecc
 ```
 
 ## Development URL Option
@@ -104,5 +104,6 @@ For a quick smoke test without a custom domain:
 npm run models:r2 -- --bucket ecc-local-models --dev-url --prefix ecc
 ```
 
-Cloudflare's `r2.dev` public URL is intended for non-production traffic and is
-rate-limited. Use a custom domain for corporate distribution.
+Cloudflare's `r2.dev` public URL is intended for non-production traffic, is
+rate-limited, and can be blocked by corporate DNS policy. Use the custom domain
+for corporate distribution.

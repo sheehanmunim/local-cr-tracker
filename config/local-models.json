@@ -1,6 +1,6 @@
 {
   "defaultProfile": "balanced",
-  "mirrorBaseUrl": "https://pub-94d1b8aec98a4b2fa8dce25bdd5ab332.r2.dev/ecc",
+  "mirrorBaseUrl": "https://models.fourechelon.com/ecc",
   "disableRegistryFallback": true,
   "artifacts": {
     "qwen3.5:4b": {

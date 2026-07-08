@@ -106,7 +106,7 @@ LOCAL_MODEL_PROFILE=auto
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL_ARTIFACT_DIR=.cache/ollama-models
 # Optional mirror for GGUF artifacts, for example a Cloudflare R2 public bucket URL.
-# OLLAMA_MODEL_MIRROR_BASE_URL=https://models.example.com/ecc
+# OLLAMA_MODEL_MIRROR_BASE_URL=https://models.fourechelon.com/ecc
 # Keep this enabled for corporate laptops that cannot reach Ollama's registry.
 # Set to 0 only on maintainer machines that are allowed to run `ollama pull`.
 OLLAMA_DISABLE_REGISTRY_FALLBACK=1

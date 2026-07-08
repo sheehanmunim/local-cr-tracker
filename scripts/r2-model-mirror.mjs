@@ -84,7 +84,7 @@ async function main() {
         "No --domain was provided, so the bucket was created without public production access.",
       );
       console.log(
-        "Use --domain models.example.com, or --dev-url for Cloudflare's non-production r2.dev URL.",
+        "Use --domain models.fourechelon.com, or --dev-url for Cloudflare's non-production r2.dev URL.",
       );
     }
   }
@@ -511,7 +511,7 @@ function writeModelConfigMirrorUrl(value) {
 function requireMirrorUrl() {
   if (!mirrorUrl) {
     throw new Error(
-      "A mirror URL is required. Pass --domain models.example.com or --mirror-url https://models.example.com/ecc.",
+      "A mirror URL is required. Pass --domain models.fourechelon.com or --mirror-url https://models.fourechelon.com/ecc.",
     );
   }
 }
@@ -605,10 +605,10 @@ function printHelp() {
   console.log(`R2 model mirror setup
 
 Usage:
-  node scripts/r2-model-mirror.mjs setup --bucket ecc-local-models --domain models.example.com
-  node scripts/r2-model-mirror.mjs upload --bucket ecc-local-models --mirror-url https://models.example.com/ecc
-  node scripts/r2-model-mirror.mjs env --mirror-url https://models.example.com/ecc
-  node scripts/r2-model-mirror.mjs urls --mirror-url https://models.example.com/ecc
+  node scripts/r2-model-mirror.mjs setup --bucket ecc-local-models --domain models.fourechelon.com
+  node scripts/r2-model-mirror.mjs upload --bucket ecc-local-models --mirror-url https://models.fourechelon.com/ecc
+  node scripts/r2-model-mirror.mjs env --mirror-url https://models.fourechelon.com/ecc
+  node scripts/r2-model-mirror.mjs urls --mirror-url https://models.fourechelon.com/ecc
 
 Options:
   --bucket <name>         R2 bucket name. Default: ecc-local-models
