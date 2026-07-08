@@ -41,7 +41,8 @@ Windows:
 ```
 
 The Windows launcher first sets the current user's PowerShell execution policy
-to `RemoteSigned`, then starts the local bootstrap script.
+to `RemoteSigned`, unblocks the local launcher files, then starts the local
+bootstrap script.
 
 macOS/Linux:
 
