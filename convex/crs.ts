@@ -680,6 +680,11 @@ export const upsertFromAssistant = mutation({
     eccScope: v.optional(v.string()),
     previousWork: v.optional(v.string()),
     disposition: v.optional(v.string()),
+    owner: v.optional(v.string()),
+    requester: v.optional(v.string()),
+    classification: v.optional(crClassification),
+    currentGate: v.optional(reviewGate),
+    preMeetingReviewStatus: v.optional(taskState),
     oocApprovalStatus: v.optional(taskState),
     closureNotificationStatus: v.optional(taskState),
     cmWorkingListStatus: v.optional(taskState),
@@ -691,6 +696,8 @@ export const upsertFromAssistant = mutation({
     const now = Date.now();
     const eccScope = cleanOptionalText(args.eccScope);
     const previousWork = cleanOptionalText(args.previousWork);
+    const owner = cleanOptionalText(args.owner);
+    const requester = cleanOptionalText(args.requester) ?? owner;
     const sourceText = truncateText(
       cleanText(args.sourceText, "Collins AI workflow update."),
       1000,
@@ -709,6 +716,15 @@ export const upsertFromAssistant = mutation({
 
       if (args.status !== undefined) {
         patch.status = args.status;
+      }
+      if (args.classification !== undefined) {
+        patch.classification = args.classification;
+      }
+      if (args.currentGate !== undefined) {
+        patch.currentGate = args.currentGate;
+      }
+      if (args.preMeetingReviewStatus !== undefined) {
+        patch.preMeetingReviewStatus = args.preMeetingReviewStatus;
       }
       if (eccScope) {
         patch.category = eccScope;
@@ -779,8 +795,8 @@ export const upsertFromAssistant = mutation({
       priority: "Medium",
       risk: "Low",
       category: cleanText(eccScope ?? "", "PWES Military ECC"),
-      owner: "Unassigned",
-      requester: "Unknown",
+      owner: cleanText(owner ?? "", "Unassigned"),
+      requester: cleanText(requester ?? "", "Unknown"),
       system: cleanText(eccScope ?? "", "PWES Military ECC"),
       targetDate: null,
       submittedDate: todayIso(),
@@ -791,8 +807,8 @@ export const upsertFromAssistant = mutation({
         : "Created from Collins AI paste.",
       tags: cleanTags(assistantWorkflowTags(status, eccScope, previousWork)),
       eccBoard: inferEccBoard(eccScope ?? ""),
-      classification: "TBD",
-      currentGate: "None",
+      classification: args.classification ?? "TBD",
+      currentGate: args.currentGate ?? "None",
       meetingDate: null,
       meetingTimeEst: "",
       ncdocNumber: "",
@@ -808,7 +824,7 @@ export const upsertFromAssistant = mutation({
       chargeNumberActive: false,
       quorum: [],
       documentationNotificationStatus: "Not Started",
-      preMeetingReviewStatus: "Not Started",
+      preMeetingReviewStatus: args.preMeetingReviewStatus ?? "Not Started",
       meetingAttendanceStatus: "Not Started",
       postMeetingPdfStatus: "Not Started",
       ncdocStatus: "Not Started",
@@ -828,7 +844,7 @@ export const upsertFromAssistant = mutation({
       waiverOption: null,
       designAuthority: "",
       disposition,
-      eccCoordinator: "",
+      eccCoordinator: cleanText(owner ?? "", ""),
       isArchived: false,
       lastUpdatedAt: now,
     });

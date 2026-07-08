@@ -191,6 +191,13 @@ type AssistantMessage = {
   content: string;
 };
 
+type AssistantWorkflowResult = {
+  crId: CrId;
+  crNumber: string;
+  operation: "created" | "updated";
+  status: string;
+};
+
 type AssistantChatSession = {
   id: string;
   title: string;
@@ -1112,6 +1119,21 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     }
   }
 
+  function handleAssistantWorkflowSaved(result: AssistantWorkflowResult) {
+    setSelectedId(result.crId);
+
+    if (result.operation === "created") {
+      setScope("mine");
+      setActiveSection("myCrs");
+      setNotice(`${result.crNumber} created from Collins AI.`);
+      return;
+    }
+
+    setScope("all");
+    setActiveSection("allCrs");
+    setNotice(`${result.crNumber} updated from Collins AI.`);
+  }
+
   return (
     <div
       ref={appShellRef}
@@ -1265,6 +1287,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                 onClose={() => setAssistantView("closed")}
                 onDock={() => setAssistantView("rail")}
                 onExpand={() => setAssistantView("full")}
+                onWorkflowSaved={handleAssistantWorkflowSaved}
               />
             ) : null}
           </main>
@@ -6664,6 +6687,7 @@ function AssistantPanel({
   onClose,
   onDock,
   onExpand,
+  onWorkflowSaved,
 }: {
   variant: "rail" | "full";
   selectedCr: Cr | null;
@@ -6673,6 +6697,7 @@ function AssistantPanel({
   onClose: () => void;
   onDock: () => void;
   onExpand: () => void;
+  onWorkflowSaved: (result: AssistantWorkflowResult) => void;
 }) {
   const assistantFileInputRef = useRef<HTMLInputElement>(null);
   const assistantTextAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -7004,6 +7029,12 @@ function AssistantPanel({
       const data = (await response.json()) as {
         answer?: string;
         error?: string;
+        workflowResult?: {
+          crId?: string;
+          crNumber?: string;
+          operation?: "created" | "updated";
+          status?: string;
+        };
       };
       if (!response.ok) {
         throw new Error(data.error ?? "The ECC assistant could not answer.");
@@ -7011,6 +7042,18 @@ function AssistantPanel({
       const answer =
         data.answer ??
         "The ECC assistant did not return a response. Please try again.";
+      if (
+        data.workflowResult?.crId &&
+        data.workflowResult.crNumber &&
+        data.workflowResult.operation
+      ) {
+        onWorkflowSaved({
+          crId: data.workflowResult.crId as CrId,
+          crNumber: data.workflowResult.crNumber,
+          operation: data.workflowResult.operation,
+          status: data.workflowResult.status ?? "",
+        });
+      }
       commitMessages([
         ...messagesRef.current,
         {

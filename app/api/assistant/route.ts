@@ -121,12 +121,33 @@ type AssistantContextResponse = {
 };
 
 type WorkflowStatus =
+  | "Ready for Review"
   | "Closed"
   | "NCDOC/xClass"
   | "Pending OOC Approvals"
   | "CM Working List";
 
 type WorkflowTaskState = "Complete" | "In Progress";
+
+type AssistantClassification =
+  | "TBD"
+  | "Class Concurrence"
+  | "Class I"
+  | "Class II"
+  | "Waiver"
+  | "Admin/NonTech";
+
+type AssistantReviewGate =
+  | "None"
+  | "CC"
+  | "CII"
+  | "G1"
+  | "G2"
+  | "G3"
+  | "G4"
+  | "P&C"
+  | "Waiver"
+  | "Delta Review";
 
 type AssistantWorkflowCommand = {
   crNumber: string;
@@ -136,6 +157,11 @@ type AssistantWorkflowCommand = {
   eccScope?: string;
   previousWork?: string;
   disposition?: string;
+  owner?: string;
+  requester?: string;
+  classification?: AssistantClassification;
+  currentGate?: AssistantReviewGate;
+  preMeetingReviewStatus?: WorkflowTaskState;
   oocApprovalStatus?: WorkflowTaskState;
   closureNotificationStatus?: WorkflowTaskState;
   cmWorkingListStatus?: WorkflowTaskState;
@@ -143,6 +169,7 @@ type AssistantWorkflowCommand = {
 };
 
 type AssistantWorkflowResult = {
+  crId: string;
   crNumber: string;
   operation: "created" | "updated";
   status: WorkflowStatus | string;
@@ -174,9 +201,23 @@ export async function POST(request: Request) {
   }
 
   const selectedCrNumber = body?.selectedCrNumber ?? null;
+  const localOwner = cleanText(
+    body?.currentUser?.localOwner ||
+      body?.currentUser?.name ||
+      body?.currentUser?.email ||
+      "",
+  );
+  const createClarificationAnswer = buildCreateCrClarificationAnswer(
+    messages,
+    selectedCrNumber,
+  );
+  if (createClarificationAnswer) {
+    return NextResponse.json({ answer: createClarificationAnswer });
+  }
   const workflowCommand = parseAssistantWorkflowCommand(
     messages,
     selectedCrNumber,
+    localOwner,
   );
 
   if (workflowCommand) {
@@ -188,6 +229,7 @@ export async function POST(request: Request) {
 
       return NextResponse.json({
         answer: buildWorkflowActionAnswer(result, workflowCommand),
+        workflowResult: result,
       });
     } catch (error) {
       console.error("Assistant workflow update failed", error);
@@ -249,12 +291,6 @@ export async function POST(request: Request) {
   const contextRows = mergeAssistantContextRows(
     directCrContext?.crs ?? [],
     contextPayload.crs ?? [],
-  );
-  const localOwner = cleanText(
-    body?.currentUser?.localOwner ||
-      body?.currentUser?.name ||
-      body?.currentUser?.email ||
-      "",
   );
   const crDetailAnswer = buildCrDetailQuestionAnswer(
     messages,
@@ -835,9 +871,40 @@ function cleanText(value: unknown) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
+function buildCreateCrClarificationAnswer(
+  messages: IncomingMessage[],
+  selectedCrNumber: string | null,
+) {
+  const latestUserMessage = findLastUserMessage(messages);
+  if (!latestUserMessage) {
+    return null;
+  }
+
+  const sourceText = latestUserMessage.content
+    .replace(/\[Screenshot attached\]/gi, "")
+    .trim();
+  if (!isAssistantCreateCrIntent(sourceText)) {
+    return null;
+  }
+
+  const crNumber = normalizeCrNumber(
+    findCrNumber(sourceText) || selectedCrNumber || "",
+  );
+  if (!crNumber) {
+    return "Yes. Send me the CR number and a short title or description first, and I will create it in My CRs. Optional fields that help: target date, owner or IPT, ECC scope, and whether CC/CII are complete.";
+  }
+
+  if (!hasAssistantCreateDetails(sourceText)) {
+    return `I can create ${crNumber} in My CRs. What short title or description should I use? Optional fields that help: target date, owner or IPT, ECC scope, and whether CC/CII are complete.`;
+  }
+
+  return null;
+}
+
 function parseAssistantWorkflowCommand(
   messages: IncomingMessage[],
   selectedCrNumber: string | null,
+  localOwner: string,
 ): AssistantWorkflowCommand | null {
   const latestUserMessage = findLastUserMessage(messages);
   if (!latestUserMessage) {
@@ -864,6 +931,8 @@ function parseAssistantWorkflowCommand(
   const mentionsOoc = /\b(?:ooc|out[-\s]?of[-\s]?cycle)\b/i.test(sourceText);
   const mentionsCmWorkingList = isCmWorkingListStatus(sourceText);
   const mentionsActualClosure = isActualClosureStatus(sourceText);
+  const mentionsCreateCr = isAssistantCreateCrIntent(sourceText);
+  const ccCiiComplete = isCcCiiCompleteStatus(sourceText);
   const hasActionIntent =
     /\b(?:push(?:ed)?|move(?:d)?|set|mark(?:ed)?|update(?:d)?|create(?:d)?|add(?:ed)?|put|send|sent|submit(?:ted)?|authoriz(?:e|ed)|queue(?:d)?|route(?:d)?|screen(?:ed)?|now|done|completed|previously)\b/i.test(
       sourceText,
@@ -871,8 +940,14 @@ function parseAssistantWorkflowCommand(
   const cmListComplete = isCmWorkingListCompleteStatus(sourceText);
 
   if (
-    (!mentionsClosure && !mentionsOoc && !mentionsCmWorkingList) ||
-    (!hasActionIntent && !mentionsActualClosure && !cmListComplete)
+    (!mentionsCreateCr &&
+      !mentionsClosure &&
+      !mentionsOoc &&
+      !mentionsCmWorkingList) ||
+    (!mentionsCreateCr &&
+      !hasActionIntent &&
+      !mentionsActualClosure &&
+      !cmListComplete)
   ) {
     return null;
   }
@@ -882,7 +957,9 @@ function parseAssistantWorkflowCommand(
     ? "Closed"
     : mentionsCmWorkingList
       ? "CM Working List"
-      : mentionsClosure
+      : mentionsCreateCr && ccCiiComplete
+        ? "Ready for Review"
+        : mentionsClosure
         ? "NCDOC/xClass"
         : mentionsOoc
           ? "Pending OOC Approvals"
@@ -896,8 +973,13 @@ function parseAssistantWorkflowCommand(
     oocComplete && mentionsClosure
       ? `OOC${eccScope ? ` for ${eccScope}` : ""}`
       : undefined;
-  const title = buildWorkflowCommandTitle(crNumber, status, eccScope);
-  const disposition = buildWorkflowCommandDisposition(status, eccScope);
+  const title = mentionsCreateCr
+    ? extractAssistantCreateTitle(sourceText, crNumber, eccScope, status)
+    : buildWorkflowCommandTitle(crNumber, status, eccScope);
+  const disposition = mentionsCreateCr
+    ? buildCreateCommandDisposition(status, eccScope, ccCiiComplete)
+    : buildWorkflowCommandDisposition(status, eccScope);
+  const owner = cleanText(localOwner);
 
   return {
     crNumber,
@@ -907,6 +989,14 @@ function parseAssistantWorkflowCommand(
     ...(eccScope ? { eccScope } : {}),
     ...(previousWork ? { previousWork } : {}),
     ...(disposition ? { disposition } : {}),
+    ...(owner ? { owner, requester: owner } : {}),
+    ...(ccCiiComplete
+      ? {
+          classification: "Class II" as const,
+          currentGate: "CII" as const,
+          preMeetingReviewStatus: "Complete" as const,
+        }
+      : {}),
     ...(mentionsOoc
       ? { oocApprovalStatus: oocComplete ? "Complete" : "In Progress" }
       : {}),
@@ -922,6 +1012,108 @@ function parseAssistantWorkflowCommand(
       : {}),
     author: "Collins AI",
   };
+}
+
+function isAssistantCreateCrIntent(value: string) {
+  return /\b(?:make|create|add|start|open|draft)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:cr|change request)\b/i.test(
+    value,
+  );
+}
+
+function hasAssistantCreateDetails(sourceText: string) {
+  const detailText = getAssistantCreateDetailText(sourceText);
+  return /\b[a-z0-9][a-z0-9/&-]*\b/i.test(detailText);
+}
+
+function getAssistantCreateDetailText(sourceText: string) {
+  return sourceText
+    .replace(/\[Screenshot attached\]/gi, " ")
+    .replace(/\bCR[-\s_]*\d{1,7}\b/gi, " ")
+    .replace(
+      /\b(?:make|create|add|start|open|draft)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+)?(?:cr|change request)\b/gi,
+      " ",
+    )
+    .replace(/\s+/g, " ")
+    .replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "")
+    .trim();
+}
+
+function isCcCiiCompleteStatus(value: string) {
+  const mentionsCc = /\bcc\b|class\s+concurrence/i.test(value);
+  const mentionsCii = /\bcii\b|class\s*(?:ii|2)\b/i.test(value);
+  const mentionsComplete =
+    /\b(?:already|gone|went|passed|through|complete|completed|approved|done|finished)\b/i.test(
+      value,
+    );
+
+  return mentionsCc && mentionsCii && mentionsComplete;
+}
+
+function extractAssistantCreateTitle(
+  sourceText: string,
+  crNumber: string,
+  eccScope: string,
+  status: WorkflowStatus | undefined,
+) {
+  const sentences = sourceText
+    .split(/[\n.!?]+/)
+    .map((sentence) => cleanText(sentence))
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    const match = sentence.match(
+      /\b(?:this is|title is|called|named)\s+(.+)$/i,
+    );
+    const title = cleanAssistantCreateTitleCandidate(match?.[1] ?? "");
+    if (title) {
+      return title;
+    }
+  }
+
+  for (const sentence of sentences) {
+    const title = cleanAssistantCreateTitleCandidate(
+      getAssistantCreateDetailText(sentence),
+    );
+    if (title) {
+      return title;
+    }
+  }
+
+  return buildWorkflowCommandTitle(crNumber, status, eccScope);
+}
+
+function cleanAssistantCreateTitleCandidate(value: string) {
+  const title = cleanText(value)
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/^(?:this\s+is|title\s+is|called|named)\s+/i, "")
+    .replace(/\b(?:it'?s|it\s+is|already)\s+.*$/i, "")
+    .replace(/\b(?:gone|went|passed)\s+through\s+.*$/i, "")
+    .replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "")
+    .trim();
+
+  if (
+    !title ||
+    /^(?:a\s+)?(?:new\s+)?(?:cr|change request)$/i.test(title) ||
+    /^(?:cc|cii|class ii|class concurrence)$/i.test(title)
+  ) {
+    return "";
+  }
+
+  return title.length > 120 ? `${title.slice(0, 117)}...` : title;
+}
+
+function buildCreateCommandDisposition(
+  status: WorkflowStatus | undefined,
+  eccScope: string,
+  ccCiiComplete: boolean,
+) {
+  if (status === "Ready for Review" && ccCiiComplete) {
+    return `Ready for ECC review${
+      eccScope ? ` for ${eccScope}` : ""
+    }; CC and CII complete`;
+  }
+
+  return `Created from Collins AI request${eccScope ? ` for ${eccScope}` : ""}`;
 }
 
 function isCmWorkingListStatus(value: string) {
@@ -979,7 +1171,10 @@ function extractEccScope(value: string) {
       /\b(?:for|to|in)\s+([A-Z][A-Z&]*(?:\s+[A-Z][A-Z&]*){0,3}\s+ECC)\b/gi,
     ),
   );
-  const match = matches.at(-1)?.[1] ?? "";
+  const fallbackMatch = value.match(
+    /\b(MS\s+ECC|Military\s+Supplier\s+ECC|PWES\s+Military\s+ECC)\b/i,
+  );
+  const match = matches.at(-1)?.[1] ?? fallbackMatch?.[1] ?? "";
   return normalizeEccScope(match);
 }
 
@@ -998,6 +1193,9 @@ function buildWorkflowCommandTitle(
   eccScope: string,
 ) {
   const scope = eccScope ? `${eccScope} ` : "";
+  if (status === "Ready for Review") {
+    return `${crNumber} - ${scope}ready for review`;
+  }
   if (status === "Closed") {
     return `${crNumber} - ${scope}closure`;
   }
@@ -1018,6 +1216,9 @@ function buildWorkflowCommandDisposition(
   eccScope: string,
 ) {
   const scope = eccScope ? ` for ${eccScope}` : "";
+  if (status === "Ready for Review") {
+    return `Ready for ECC review${scope}`;
+  }
   if (status === "Closed") {
     return `Closed${scope}`;
   }
@@ -1040,21 +1241,31 @@ function buildWorkflowActionAnswer(
   command: AssistantWorkflowCommand,
 ) {
   const action = result.operation === "created" ? "Created" : "Updated";
+  const location =
+    result.operation === "created" && command.owner ? "My CRs" : "All CRs";
   const scope = command.eccScope ? ` for ${command.eccScope}` : "";
+  const owner =
+    result.operation === "created" && command.owner
+      ? ` Assigned it to ${command.owner}.`
+      : "";
   const previous = command.previousWork
     ? ` I also marked ${command.previousWork} as complete.`
     : "";
 
+  if (command.status === "Ready for Review") {
+    return `${action} ${result.crNumber} in ${location} and marked it Ready for Review${scope}.${owner}${previous} The request queue will update from the CR register.`;
+  }
+
   if (command.status === "Closed") {
-    return `${action} ${result.crNumber} in All CRs and marked it closed${scope}.${previous} The workflow view will update from the CR register.`;
+    return `${action} ${result.crNumber} in ${location} and marked it closed${scope}.${owner}${previous} The workflow view will update from the CR register.`;
   }
 
   if (command.status === "NCDOC/xClass") {
-    return `${action} ${result.crNumber} in All CRs and moved it to NCDOC/xClass records work${scope}.${previous} It will not show closed until NCDOC, xClass, and IPT notification are complete.`;
+    return `${action} ${result.crNumber} in ${location} and moved it to NCDOC/xClass records work${scope}.${owner}${previous} It will not show closed until NCDOC, xClass, and IPT notification are complete.`;
   }
 
   if (command.status === "Pending OOC Approvals") {
-    return `${action} ${result.crNumber} in All CRs and moved it into OOC approvals${scope}.${previous} The workflow view will update from the CR register.`;
+    return `${action} ${result.crNumber} in ${location} and moved it into OOC approvals${scope}.${owner}${previous} The workflow view will update from the CR register.`;
   }
 
   if (command.status === "CM Working List") {
@@ -1062,10 +1273,10 @@ function buildWorkflowActionAnswer(
       command.cmWorkingListStatus === "Complete"
         ? "marked the CM Working List task complete"
         : "moved it into CM Working List readiness";
-    return `${action} ${result.crNumber} in All CRs and ${cmState}${scope}.${previous} The workflow view will update from the CR register.`;
+    return `${action} ${result.crNumber} in ${location} and ${cmState}${scope}.${owner}${previous} The workflow view will update from the CR register.`;
   }
 
-  return `${action} ${result.crNumber} in All CRs. The workflow view will update from the CR register.`;
+  return `${action} ${result.crNumber} in ${location}.${owner} The workflow view will update from the CR register.`;
 }
 
 async function readProcessKnowledge() {
