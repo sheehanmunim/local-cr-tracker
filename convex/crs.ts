@@ -227,6 +227,19 @@ export const list = query({
   },
 });
 
+export const listArchived = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAuthenticated(ctx);
+
+    return await ctx.db
+      .query("crs")
+      .withIndex("by_isArchived", (q) => q.eq("isArchived", true))
+      .order("desc")
+      .take(200);
+  },
+});
+
 export const listWhiteboardPositions = query({
   args: {},
   handler: async (ctx) => {
@@ -924,6 +937,28 @@ export const archive = mutation({
       crId: args.id,
       author,
       body: "CR archived.",
+      kind: "edited",
+      createdAt: now,
+    });
+    return args.id;
+  },
+});
+
+export const restore = mutation({
+  args: { id: v.id("crs"), author: v.string() },
+  handler: async (ctx, args) => {
+    const author = identityDisplayName(await requireAuthenticated(ctx));
+    const cr = await ctx.db.get(args.id);
+    if (!cr) {
+      throw new Error("CR not found.");
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.id, { isArchived: false, lastUpdatedAt: now });
+    await ctx.db.insert("crUpdates", {
+      crId: args.id,
+      author,
+      body: "CR restored from archive.",
       kind: "edited",
       createdAt: now,
     });

@@ -8,6 +8,7 @@ import Image from "next/image";
 import {
   AlertTriangle,
   Archive,
+  ArchiveRestore,
   ArrowUp,
   AudioLines,
   BarChart3,
@@ -91,6 +92,7 @@ type ClassificationFilter = CrClassification | "All";
 type CrScope =
   | "mine"
   | "all"
+  | "archived"
   | "attention"
   | "dueSoon"
   | "actions"
@@ -102,6 +104,7 @@ type DashboardSection =
   | "workflow"
   | "allCrs"
   | "myCrs"
+  | "archived"
   | "analytics"
   | "settings";
 type SidebarNavSection = Exclude<DashboardSection, "settings">;
@@ -505,6 +508,7 @@ const defaultSidebarNavOrder: SidebarNavSection[] = [
   "workflow",
   "allCrs",
   "myCrs",
+  "archived",
   "analytics",
 ];
 const defaultSidebarNavOrderSnapshot = defaultSidebarNavOrder.join("|");
@@ -954,6 +958,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     getEmptyProfilePhotoSnapshot,
   );
   const crs = useQuery(api.crs.list, { status: "All" });
+  const archivedCrs = useQuery(api.crs.listArchived);
   const createCr = useMutation(api.crs.create);
   const updateCr = useMutation(api.crs.update);
   const [selectedId, setSelectedId] = useState<CrId | null>(null);
@@ -1021,16 +1026,21 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
   }
 
   const owners = useMemo(() => {
-    const source = crs ?? [];
+    const source = activeSection === "archived" ? archivedCrs ?? [] : crs ?? [];
     return Array.from(new Set(source.map((cr) => cr.owner))).sort();
-  }, [crs]);
+  }, [activeSection, archivedCrs, crs]);
   const peopleOptions = useMemo(
-    () => buildPeopleOptions(crs ?? [], signedInName, signedInEmail),
-    [crs, signedInEmail, signedInName],
+    () =>
+      buildPeopleOptions(
+        [...(crs ?? []), ...(archivedCrs ?? [])],
+        signedInName,
+        signedInEmail,
+      ),
+    [archivedCrs, crs, signedInEmail, signedInName],
   );
 
   const filteredCrs = useMemo(() => {
-    const source = crs ?? [];
+    const source = activeSection === "archived" ? archivedCrs ?? [] : crs ?? [];
     const term = search.trim().toLowerCase();
     return source.filter((cr) => {
       const matchesScope = crMatchesScope(cr, scope, localOwner);
@@ -1078,6 +1088,8 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
       );
     });
   }, [
+    activeSection,
+    archivedCrs,
     boardFilter,
     classificationFilter,
     crs,
@@ -1094,6 +1106,8 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     (selectedId && filteredCrs.find((cr) => cr._id === selectedId)) ??
     filteredCrs[0] ??
     null;
+  const requestLoading =
+    activeSection === "archived" ? !archivedCrs : !crs;
 
   const stats = useMemo(() => buildStats(crs ?? []), [crs]);
   const isAssistantOpen = assistantView !== "closed";
@@ -1106,6 +1120,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
       section === "allCrs" ||
       section === "dashboard" ||
       section === "workflow" ||
+      section === "archived" ||
       section === "analytics"
     ) {
       setScope("all");
@@ -1113,6 +1128,11 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
 
     if (section === "myCrs") {
       setScope("mine");
+    }
+
+    if (section === "archived") {
+      setScope("archived");
+      setViewMode("list");
     }
   }
 
@@ -1147,6 +1167,13 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
     setScope("all");
     setActiveSection("allCrs");
     setNotice(`${result.crNumber} updated from Collins AI.`);
+  }
+
+  function handleArchivedCrRestored(id: CrId, crNumber: string) {
+    setSelectedId(id);
+    setScope("all");
+    setActiveSection("allCrs");
+    setNotice(`${crNumber} restored from archive.`);
   }
 
   return (
@@ -1257,7 +1284,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                       ) : (
                         <RequestWorkspace
                           crs={filteredCrs}
-                          loading={!crs}
+                          loading={requestLoading}
                           selectedId={selectedId}
                           selectedCr={selectedCr}
                           scope={scope}
@@ -1281,6 +1308,7 @@ function CrTrackerDashboard({ user }: { user: AuthUser }) {
                           onClassificationFilterChange={setClassificationFilter}
                           onOwnerFilterChange={setOwnerFilter}
                           onSearchChange={setSearch}
+                          onRestored={handleArchivedCrRestored}
                           onKanbanStatusChange={(cr, status) =>
                             void handleKanbanStatusChange(cr, status)
                           }
@@ -1955,6 +1983,7 @@ function RequestWorkspace({
   onClassificationFilterChange,
   onOwnerFilterChange,
   onSearchChange,
+  onRestored,
   onKanbanStatusChange,
 }: {
   crs: Cr[];
@@ -1982,6 +2011,7 @@ function RequestWorkspace({
   onClassificationFilterChange: (value: ClassificationFilter) => void;
   onOwnerFilterChange: (value: string) => void;
   onSearchChange: (value: string) => void;
+  onRestored: (id: CrId, crNumber: string) => void;
   onKanbanStatusChange: (cr: Cr, status: CrStatus) => void;
 }) {
   const selectedId = selectedCr?._id ?? null;
@@ -1994,7 +2024,7 @@ function RequestWorkspace({
     <>
       <ViewControls
         scope={scope}
-        viewMode={viewMode}
+        viewMode={scope === "archived" ? "list" : viewMode}
         count={crs.length}
         onViewModeChange={onViewModeChange}
       />
@@ -2032,6 +2062,26 @@ function RequestWorkspace({
             key={selectedId ?? "empty"}
             cr={selectedCr}
             peopleOptions={peopleOptions}
+            onRestored={onRestored}
+          />
+        </section>
+      ) : scope === "archived" ? (
+        <section
+          id="requests"
+          className="grid gap-5 min-[1180px]:grid-cols-[430px_minmax(0,1fr)]"
+        >
+          <CrList
+            crs={crs}
+            loading={loading}
+            selectedId={selectedId}
+            title={scopeTitle(scope)}
+            onSelect={onSelect}
+          />
+          <CrDetails
+            key={selectedId ?? "empty"}
+            cr={selectedCr}
+            peopleOptions={peopleOptions}
+            onRestored={onRestored}
           />
         </section>
       ) : viewMode === "excel" ? (
@@ -2792,6 +2842,11 @@ function TrackerSidebar({
       section: "myCrs" as const,
       label: "My CRs",
       icon: UserRound,
+    },
+    archived: {
+      section: "archived" as const,
+      label: "Archived",
+      icon: ArchiveRestore,
     },
     analytics: {
       section: "analytics" as const,
@@ -5548,14 +5603,17 @@ function CrDetails({
   cr,
   peopleOptions = [],
   onClose,
+  onRestored,
 }: {
   cr: Cr | null;
   peopleOptions?: string[];
   onClose?: () => void;
+  onRestored?: (id: CrId, crNumber: string) => void;
 }) {
   const updateCr = useMutation(api.crs.update);
   const addUpdate = useMutation(api.crs.addUpdate);
   const archiveCr = useMutation(api.crs.archive);
+  const restoreCr = useMutation(api.crs.restore);
   const addAction = useMutation(api.crs.addAction);
   const updateActionStatus = useMutation(api.crs.updateActionStatus);
   const addApproval = useMutation(api.crs.addApproval);
@@ -5643,6 +5701,24 @@ function CrDetails({
     }
   }
 
+  async function handleRestore() {
+    if (!cr) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await restoreCr({ id: cr._id, author: "Collins user" });
+      onRestored?.(cr._id, cr.crNumber);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Unable to restore CR.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <section className={cn(panelShell, "overflow-hidden")}>
       <div className={panelHeader}>
@@ -5665,22 +5741,31 @@ function CrDetails({
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsEditing((value) => !value)}
-            >
-              {isEditing ? (
-                <X className="h-4 w-4" />
-              ) : (
-                <SlidersHorizontal className="h-4 w-4" />
-              )}
-              {isEditing ? "Cancel" : "Edit"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleArchive}>
-              <Archive className="h-4 w-4" />
-              Archive
-            </Button>
+            {!cr.isArchived ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsEditing((value) => !value)}
+              >
+                {isEditing ? (
+                  <X className="h-4 w-4" />
+                ) : (
+                  <SlidersHorizontal className="h-4 w-4" />
+                )}
+                {isEditing ? "Cancel" : "Edit"}
+              </Button>
+            ) : null}
+            {cr.isArchived ? (
+              <Button variant="outline" size="sm" onClick={handleRestore}>
+                <ArchiveRestore className="h-4 w-4" />
+                Restore
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={handleArchive}>
+                <Archive className="h-4 w-4" />
+                Archive
+              </Button>
+            )}
             {onClose ? (
               <Button variant="outline" size="sm" onClick={onClose}>
                 <X className="h-4 w-4" />
@@ -5692,6 +5777,12 @@ function CrDetails({
       </div>
 
       <div className="p-4">
+        {cr.isArchived ? (
+          <div className="mb-4 border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            This CR is archived. Restore it to edit details, actions, or
+            approvals.
+          </div>
+        ) : null}
         {isEditing ? (
           <CrForm
             form={form}
@@ -5706,20 +5797,22 @@ function CrDetails({
           <CrReadOnlyDetails cr={cr} />
         )}
 
-        <div className="mt-6 border-t border-slate-200 pt-4">
-          <ActionsApprovalsPanel
-            cr={cr}
-            actions={actions ?? []}
-            approvals={approvals ?? []}
-            loading={!actions || !approvals}
-            peopleOptions={peopleOptions}
-            addAction={addAction}
-            updateActionStatus={updateActionStatus}
-            addApproval={addApproval}
-            updateApprovalStatus={updateApprovalStatus}
-            onError={setError}
-          />
-        </div>
+        {!cr.isArchived ? (
+          <div className="mt-6 border-t border-slate-200 pt-4">
+            <ActionsApprovalsPanel
+              cr={cr}
+              actions={actions ?? []}
+              approvals={approvals ?? []}
+              loading={!actions || !approvals}
+              peopleOptions={peopleOptions}
+              addAction={addAction}
+              updateActionStatus={updateActionStatus}
+              addApproval={addApproval}
+              updateApprovalStatus={updateApprovalStatus}
+              onError={setError}
+            />
+          </div>
+        ) : null}
 
         <div className="mt-6 border-t border-slate-200 pt-4">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -9488,6 +9581,7 @@ function scopeTitle(scope: CrScope) {
   const titles: Record<CrScope, string> = {
     mine: "My CRs",
     all: "All CRs",
+    archived: "Archived CRs",
     attention: "Needs Attention",
     dueSoon: "Due Soon",
     actions: "Actions",
@@ -9498,6 +9592,9 @@ function scopeTitle(scope: CrScope) {
 }
 
 function crMatchesScope(cr: Cr, scope: CrScope, localOwner: string) {
+  if (scope === "archived") {
+    return true;
+  }
   if (scope === "mine") {
     return belongsToLocalOwner(cr, localOwner);
   }
@@ -9782,6 +9879,7 @@ function normalizeSidebarNavOrder(value: unknown): SidebarNavSection[] {
       item === "workflow" ||
       item === "allCrs" ||
       item === "myCrs" ||
+      item === "archived" ||
       item === "analytics",
   );
   return [
@@ -9810,6 +9908,7 @@ function normalizeSidebarNavSection(
     value === "workflow" ||
     value === "allCrs" ||
     value === "myCrs" ||
+    value === "archived" ||
     value === "analytics"
   ) {
     return value;
