@@ -75,6 +75,14 @@ const convexDownloadTimeoutMs = parsePositiveInteger(
   process.env.CONVEX_BACKEND_DOWNLOAD_TIMEOUT_MS,
   10 * 60 * 1000,
 );
+const localAppUrl = normalizeOptionalUrl(
+  process.env.LOCAL_APP_URL || modelConfig.localAppUrl || "http://localhost:3000",
+);
+const openLocalAppBrowser = parseBoolean(process.env.LOCAL_OPEN_BROWSER, true);
+const localAppOpenTimeoutMs = parsePositiveInteger(
+  process.env.LOCAL_APP_OPEN_TIMEOUT_MS,
+  2 * 60 * 1000,
+);
 const npmCommand = process.env.npm_execpath
   ? process.execPath
   : process.platform === "win32"
@@ -140,7 +148,11 @@ async function main() {
   }
 
   console.log("\nStarting local Convex and Next.js...");
-  console.log("Open http://localhost:3000 when the server is ready.\n");
+  console.log(
+    openLocalAppBrowser
+      ? `The browser will open ${localAppUrl} when the server is ready.\n`
+      : `Open ${localAppUrl} when the server is ready.\n`,
+  );
 
   const child = spawn(npmCommand, [...npmArgsPrefix, "run", "dev:local"], {
     cwd: root,
@@ -155,6 +167,12 @@ async function main() {
     },
     stdio: "inherit",
   });
+
+  if (openLocalAppBrowser) {
+    openLocalAppWhenReady(child).catch((error) => {
+      console.warn(`Could not open ${localAppUrl} automatically: ${error.message}`);
+    });
+  }
 
   child.on("exit", (code, signal) => {
     if (signal) {
@@ -193,6 +211,48 @@ function printHeader() {
   console.log(`Seed voice model: ${voiceModel}`);
   console.log(`Seed vision model: ${visionModel}`);
   console.log(`Convex backend: ${convexLocalBackendVersion}\n`);
+}
+
+async function openLocalAppWhenReady(child) {
+  const startedAt = Date.now();
+  let childExited = false;
+  child.once("exit", () => {
+    childExited = true;
+  });
+
+  while (!childExited && Date.now() - startedAt < localAppOpenTimeoutMs) {
+    if (await canReachUrl(localAppUrl)) {
+      console.log(`Opening ${localAppUrl}...`);
+      openUrlInDefaultBrowser(localAppUrl);
+      return;
+    }
+    await sleep(1000);
+  }
+
+  if (!childExited) {
+    console.warn(`Timed out waiting for ${localAppUrl}; open it manually when ready.`);
+  }
+}
+
+function canReachUrl(url) {
+  return new Promise((resolve) => {
+    const parsedUrl = new URL(url);
+    const client = parsedUrl.protocol === "https:" ? https : http;
+    const request = client.request(
+      parsedUrl,
+      { method: "GET" },
+      (response) => {
+        response.resume();
+        resolve((response.statusCode ?? 500) < 500);
+      },
+    );
+    request.on("error", () => resolve(false));
+    request.setTimeout(2000, () => {
+      request.destroy();
+      resolve(false);
+    });
+    request.end();
+  });
 }
 
 function printResolvedModels() {

@@ -62,8 +62,9 @@ That command will:
 - cache the pinned local Convex backend/dashboard and configure a local
   anonymous Convex deployment without contacting Convex cloud
 - start the Next.js app
+- open the local website automatically when it is ready
 
-Open the app:
+The app opens automatically at:
 
 ```text
 http://localhost:3000
@@ -111,6 +112,8 @@ LOCAL_MODEL_PROFILE=auto
 # OLLAMA_VOICE_MODEL=gemma3:4b
 # OLLAMA_VISION_MODEL=gemma3:4b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+# Set to 0 if you do not want the launcher to open the browser automatically.
+LOCAL_OPEN_BROWSER=1
 OLLAMA_MODEL_ARTIFACT_DIR=.cache/ollama-models
 # Optional mirror for GGUF artifacts, for example a Cloudflare R2 public bucket URL.
 # OLLAMA_MODEL_MIRROR_BASE_URL=https://models.fourechelon.com/ecc
