@@ -376,7 +376,7 @@ async function ensureOllamaModelFromArtifact(name, artifact = getModelArtifact(n
     hasArtifact = await tryDownloadChunkedModelArtifact(name, artifact);
   }
 
-  if (!hasArtifact && artifact.url) {
+  if (!hasArtifact && !artifact.preferManifest && artifact.url) {
     hasArtifact = await tryDownloadModelArtifact(name, artifact);
   }
 
@@ -742,7 +742,14 @@ async function downloadFile(url, targetPath, redirectCount = 0) {
     if (!shouldUseCurlFallback(url, error)) {
       throw error;
     }
-    await downloadFileWithCurl(url, targetPath, error);
+    try {
+      await downloadFileWithCurl(url, targetPath, error);
+    } catch (curlError) {
+      if (process.platform !== "win32") {
+        throw curlError;
+      }
+      await downloadFileWithPowerShell(url, targetPath, curlError);
+    }
   }
 }
 
@@ -857,6 +864,57 @@ async function downloadFileWithCurl(url, targetPath, originalError) {
   fs.renameSync(tempPath, targetPath);
 }
 
+async function downloadFileWithPowerShell(url, targetPath, originalError) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tempPath = `${targetPath}.download`;
+  fs.rmSync(tempPath, { force: true });
+
+  console.log(`Retrying download through PowerShell: ${url}`);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+    "$headers = @{ Accept = '*/*' }",
+    "try {",
+    "  Invoke-WebRequest -UseBasicParsing -Uri $args[0] -OutFile $args[1] -UserAgent $args[2] -Headers $headers",
+    "} catch {",
+    "  if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {",
+    "    Start-BitsTransfer -Source $args[0] -Destination $args[1] -ErrorAction Stop",
+    "  } else {",
+    "    throw",
+    "  }",
+    "}",
+  ].join("; ");
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      script,
+      url,
+      tempPath,
+      modelMirrorUserAgent,
+    ],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: process.env,
+      shell: false,
+      timeout: modelDownloadTimeoutMs,
+    },
+  );
+
+  if (result.status !== 0) {
+    fs.rmSync(tempPath, { force: true });
+    throw new Error(
+      `${formatErrorMessage(originalError)}; PowerShell fallback failed: ${formatProcessError(result)}`,
+    );
+  }
+
+  fs.renameSync(tempPath, targetPath);
+}
+
 function shouldUseCurlFallback(url, error) {
   if (!/^https?:\/\//i.test(url)) {
     return false;
@@ -904,11 +962,15 @@ function runCurl(args, options = {}) {
 }
 
 function formatCurlError(result) {
+  return formatProcessError(result);
+}
+
+function formatProcessError(result) {
   if (result.error) {
     return result.error.message;
   }
   const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-  return stderr || `curl exited with status ${result.status}`;
+  return stderr || `process exited with status ${result.status}`;
 }
 
 function sha256File(filePath) {
