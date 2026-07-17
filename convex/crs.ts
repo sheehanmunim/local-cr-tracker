@@ -265,7 +265,9 @@ export const listWhiteboardPositions = query({
 
     const positions = await ctx.db
       .query("crWhiteboardPositions")
-      .withIndex("by_userKey", (q) => q.eq("userKey", identitySharedKey(identity)))
+      .withIndex("by_userKey", (q) =>
+        q.eq("userKey", identitySharedKey(identity)),
+      )
       .take(500);
 
     return positions.map((position) => ({
@@ -361,7 +363,9 @@ export const setWorkflowRequirementCheck = mutation({
     if (!requirementKey) {
       throw new Error("Requirement key is required.");
     }
-    if (!requirements.some((requirement) => requirement.key === requirementKey)) {
+    if (
+      !requirements.some((requirement) => requirement.key === requirementKey)
+    ) {
       throw new Error("Requirement key is not part of this checklist.");
     }
 
@@ -860,6 +864,7 @@ export const upsertFromAssistant = mutation({
     ncdocStatus: v.optional(taskState),
     xclassStatus: v.optional(taskState),
     oocApprovalStatus: v.optional(taskState),
+    chairApprovalStatus: v.optional(taskState),
     closureNotificationStatus: v.optional(taskState),
     cmWorkingListStatus: v.optional(taskState),
     author: v.string(),
@@ -918,6 +923,9 @@ export const upsertFromAssistant = mutation({
       if (args.oocApprovalStatus !== undefined) {
         patch.oocApprovalStatus = args.oocApprovalStatus;
       }
+      if (args.chairApprovalStatus !== undefined) {
+        patch.chairApprovalStatus = args.chairApprovalStatus;
+      }
       if (args.closureNotificationStatus !== undefined) {
         patch.closureNotificationStatus = args.closureNotificationStatus;
       }
@@ -936,13 +944,10 @@ export const upsertFromAssistant = mutation({
         existing.technicalNotes,
         previousWork,
       );
-      patch.tags = mergeTags(
-        existing.tags,
-        [
-          ...assistantWorkflowTags(args.status, eccScope, previousWork),
-          args.waiverOption ?? "",
-        ],
-      );
+      patch.tags = mergeTags(existing.tags, [
+        ...assistantWorkflowTags(args.status, eccScope, previousWork),
+        args.waiverOption ?? "",
+      ]);
 
       await ctx.db.patch(existing._id, patch);
       await ctx.db.insert("crUpdates", {
@@ -1021,7 +1026,7 @@ export const upsertFromAssistant = mutation({
       ncdocStatus: args.ncdocStatus ?? "Not Started",
       xclassStatus: args.xclassStatus ?? "Not Started",
       oocApprovalStatus: args.oocApprovalStatus ?? "Not Started",
-      chairApprovalStatus: "Not Started",
+      chairApprovalStatus: args.chairApprovalStatus ?? "Not Started",
       closureNotificationStatus:
         args.closureNotificationStatus ??
         (status === "Closed"

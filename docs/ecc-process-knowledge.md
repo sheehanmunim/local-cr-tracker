@@ -168,6 +168,15 @@ Military Supplier EC action and closeout rules:
 
 MS ECC waiver / CC-CII how-to rules from the local screenshots:
 
+- Treat the records-closeout sequence for CC/CII as OOC approvals, ECC Chair
+  approval, NCDOC, xClass, CM Working List, then CC/CII ECC closeout. When the
+  CR also proceeds through MS ECC, its following sequence is MS ECC OOC
+  approvals, ECC Chair approval, a separate MS ECC NCDOC, xClass, then MS ECC
+  closeout. The MS ECC portion does not use CM Working List.
+- If a creation request explicitly says the CR is now in the MS ECC Option 1
+  NCDOC process, create it with Phase 7 NCDOC current. Treat the prerequisite
+  CC/CII closeout and MS ECC OOC/chair approvals as complete, leave xClass and
+  MS ECC closeout pending, and mark CM Working List not applicable.
 - For MS ECC Option 1, after CC and CII are complete, the next work is records
   closeout, not normal request-queue review. Make the ESA SAD and SAD VP
   reports, create the NCDOC, complete xClass, and send the MS ECC closure email.
