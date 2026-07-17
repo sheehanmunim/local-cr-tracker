@@ -8,7 +8,7 @@ type OllamaMessage = {
 
 type OllamaChatPayload = {
   model: string;
-  stream: false;
+  stream: boolean;
   think?: false;
   messages: OllamaMessage[];
   options?: Record<string, unknown>;
@@ -52,16 +52,21 @@ export async function requestOllamaChat({
     lastResponse = response;
   }
 
-  return lastResponse ?? fetch(`${ollamaBaseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      model,
-    }),
-  });
+  return (
+    lastResponse ??
+    fetch(`${ollamaBaseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        model,
+      }),
+    })
+  );
 }
 
 function hasImagePayload(messages: OllamaMessage[]) {
-  return messages.some((message) => message.images && message.images.length > 0);
+  return messages.some(
+    (message) => message.images && message.images.length > 0,
+  );
 }

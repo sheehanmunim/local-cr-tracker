@@ -5,6 +5,7 @@ import {
   isAuthenticated,
 } from "@/lib/auth-server";
 import { requestOllamaChat } from "@/lib/ollama";
+import { createAssistantStreamingResponse } from "@/lib/assistant-stream";
 import { getMsEccOption1NcdocWorkflowState } from "@/lib/ecc-workflow-intent";
 import localModelsConfig from "@/config/local-models.json";
 import { readFile } from "node:fs/promises";
@@ -392,7 +393,7 @@ export async function POST(request: Request) {
     const ollamaResponse = await requestOllamaChat({
       ollamaBaseUrl,
       model,
-      stream: false,
+      stream: true,
       think: false,
       messages: [{ role: "system", content: systemPrompt }, ...chatMessages],
       options: {
@@ -414,23 +415,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = (await ollamaResponse.json()) as AssistantServiceResponse;
-    let answer = data.message?.content?.trim();
-
-    if (isSuspiciousAssistantAnswer(answer, messages)) {
-      answer = await retryWithConversationalModel({
-        ollamaBaseUrl,
-        model: voiceModel,
-        messages: [{ role: "system", content: systemPrompt }, ...chatMessages],
-        isVoiceMode,
-        needsCrContext,
-      });
-    }
-
-    return NextResponse.json({
-      answer:
-        answer ||
-        "The ECC assistant did not return a response. Please try again.",
+    return createAssistantStreamingResponse({
+      response: ollamaResponse,
+      onComplete: async (answer) => {
+        if (!isSuspiciousAssistantAnswer(answer, messages)) return null;
+        const replacement = await retryWithConversationalModel({
+          ollamaBaseUrl,
+          model: voiceModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...chatMessages,
+          ],
+          isVoiceMode,
+          needsCrContext,
+        });
+        return replacement || null;
+      },
     });
   } catch (error) {
     console.error("Assistant service request failed", error);

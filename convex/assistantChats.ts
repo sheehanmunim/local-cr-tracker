@@ -10,6 +10,7 @@ import { queueAssistantChatSnapshot } from "./sync";
 const messageValidator = v.object({
   role: v.union(v.literal("assistant"), v.literal("user")),
   content: v.string(),
+  createdAt: v.optional(v.number()),
 });
 
 export const list = query({
@@ -73,6 +74,7 @@ export const save = mutation({
       messages: args.messages.slice(-100).map((message) => ({
         role: message.role,
         content: message.content.slice(0, 20_000),
+        createdAt: message.createdAt,
       })),
       createdAt: args.createdAt,
       updatedAt: args.updatedAt,

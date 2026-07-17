@@ -3,6 +3,7 @@
 import { api } from "@/convex/_generated/api";
 import { Doc, Id } from "@/convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
+import { readAssistantResponseStream } from "@/lib/assistant-stream";
 import { useMutation, useQuery } from "convex/react";
 import Image from "next/image";
 import {
@@ -196,6 +197,8 @@ type ApprovalFormState = {
 type AssistantMessage = {
   role: "assistant" | "user";
   content: string;
+  createdAt: number;
+  isStreaming?: boolean;
 };
 
 type AssistantWorkflowResult = {
@@ -8496,7 +8499,10 @@ function AssistantPanel({
         mergedById.set(remote.chatId, {
           id: remote.chatId,
           title: remote.title,
-          messages: normalizeAssistantMessages(remote.messages),
+          messages: normalizeAssistantMessages(
+            remote.messages,
+            remote.createdAt,
+          ),
           createdAt: remote.createdAt,
           updatedAt: remote.updatedAt,
         });
@@ -8742,9 +8748,29 @@ function AssistantPanel({
       : prompt;
     const nextMessages: AssistantMessage[] = [
       ...messagesRef.current,
-      { role: "user", content: displayedPrompt },
+      {
+        role: "user",
+        content: displayedPrompt,
+        createdAt: getAssistantMessageTimestamp(),
+      },
     ];
     commitMessages(nextMessages);
+    const baseMessages = messagesRef.current;
+    const assistantStartedAt = getAssistantMessageTimestamp();
+    const showStreamingAnswer = (content: string) => {
+      const streamingMessages: AssistantMessage[] = [
+        ...baseMessages,
+        {
+          role: "assistant",
+          content,
+          createdAt: assistantStartedAt,
+          isStreaming: true,
+        },
+      ];
+      messagesRef.current = streamingMessages;
+      setMessages(streamingMessages);
+    };
+    showStreamingAnswer("");
     setInput("");
     setAttachment(null);
     setAttachmentError("");
@@ -8774,39 +8800,64 @@ function AssistantPanel({
             : null,
         }),
       });
-      const data = (await response.json()) as {
-        answer?: string;
-        error?: string;
-        workflowResult?: {
-          crId?: string;
-          crNumber?: string;
-          operation?: "created" | "updated";
-          status?: string;
-        };
-      };
+      const contentType = response.headers.get("content-type") ?? "";
       if (!response.ok) {
-        throw new Error(data.error ?? "The ECC assistant could not answer.");
+        const errorData = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          errorData?.error ?? "The ECC assistant could not answer.",
+        );
       }
-      const answer =
-        data.answer ??
-        "The ECC assistant did not return a response. Please try again.";
+
+      let workflowResult:
+        | {
+            crId?: string;
+            crNumber?: string;
+            operation?: "created" | "updated";
+            status?: string;
+          }
+        | undefined;
+      let answer: string;
+      if (contentType.includes("application/x-ndjson")) {
+        answer = await readAssistantResponseStream(
+          response,
+          showStreamingAnswer,
+        );
+      } else {
+        const data = (await response.json()) as {
+          answer?: string;
+          workflowResult?: {
+            crId?: string;
+            crNumber?: string;
+            operation?: "created" | "updated";
+            status?: string;
+          };
+        };
+        answer =
+          data.answer ??
+          "The ECC assistant did not return a response. Please try again.";
+        workflowResult = data.workflowResult;
+        showStreamingAnswer(answer);
+      }
       if (
-        data.workflowResult?.crId &&
-        data.workflowResult.crNumber &&
-        data.workflowResult.operation
+        workflowResult?.crId &&
+        workflowResult.crNumber &&
+        workflowResult.operation
       ) {
         onWorkflowSaved({
-          crId: data.workflowResult.crId as CrId,
-          crNumber: data.workflowResult.crNumber,
-          operation: data.workflowResult.operation,
-          status: data.workflowResult.status ?? "",
+          crId: workflowResult.crId as CrId,
+          crNumber: workflowResult.crNumber,
+          operation: workflowResult.operation,
+          status: workflowResult.status ?? "",
         });
       }
       commitMessages([
-        ...messagesRef.current,
+        ...baseMessages,
         {
           role: "assistant",
           content: answer,
+          createdAt: assistantStartedAt,
         },
       ]);
       return answer;
@@ -8816,10 +8867,11 @@ function AssistantPanel({
           ? caught.message
           : "The ECC assistant could not answer.";
       commitMessages([
-        ...messagesRef.current,
+        ...baseMessages,
         {
           role: "assistant",
           content: answer,
+          createdAt: assistantStartedAt,
         },
       ]);
       return answer;
@@ -9568,10 +9620,35 @@ function AssistantPanel({
                   {message.role === "user" ? (
                     <div className="max-w-[78%] bg-gray-950 px-4 py-2.5 text-white">
                       <p className="whitespace-pre-wrap">{message.content}</p>
+                      <p
+                        className="mt-1.5 text-right text-[10px] text-gray-300"
+                        title={new Date(message.createdAt).toLocaleString()}
+                      >
+                        {formatAssistantMessageTimestamp(message.createdAt)}
+                      </p>
                     </div>
                   ) : (
                     <div className="max-w-[86%] text-slate-900">
-                      <AssistantMarkdown content={message.content} />
+                      <p
+                        className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+                        title={new Date(message.createdAt).toLocaleString()}
+                      >
+                        Collins AI ·{" "}
+                        {formatAssistantMessageTimestamp(message.createdAt)}
+                      </p>
+                      {message.content ? (
+                        <AssistantMarkdown content={message.content} />
+                      ) : message.isStreaming ? (
+                        <span className="text-xs font-medium text-slate-500">
+                          Generating…
+                        </span>
+                      ) : null}
+                      {message.isStreaming ? (
+                        <span
+                          className="ml-1 inline-block h-4 w-0.5 animate-pulse bg-red-600 align-text-bottom"
+                          aria-label="Response is still being generated"
+                        />
+                      ) : null}
                     </div>
                   )}
                 </div>
@@ -11171,12 +11248,17 @@ function saveWorkflowPhasePositions(
   }
 }
 
+function getAssistantMessageTimestamp() {
+  return Date.now();
+}
+
 function getDefaultAssistantMessages(): AssistantMessage[] {
   return [
     {
       role: "assistant",
       content:
         "Ready to triage blockers, due dates, ownership load, or risk across the Collins Aerospace CR queue.",
+      createdAt: Date.now(),
     },
   ];
 }
@@ -11184,8 +11266,8 @@ function getDefaultAssistantMessages(): AssistantMessage[] {
 function createAssistantChatSession(
   messages: AssistantMessage[] = getDefaultAssistantMessages(),
 ): AssistantChatSession {
-  const normalizedMessages = normalizeAssistantMessages(messages);
   const now = Date.now();
+  const normalizedMessages = normalizeAssistantMessages(messages, now);
 
   return {
     id: createAssistantChatId(),
@@ -11284,12 +11366,12 @@ function normalizeAssistantChatSession(
     return null;
   }
 
-  const messages = normalizeAssistantMessages(session.messages);
   const now = Date.now();
   const createdAt =
     typeof session.createdAt === "number" && Number.isFinite(session.createdAt)
       ? session.createdAt
       : now;
+  const messages = normalizeAssistantMessages(session.messages, createdAt);
   const updatedAt =
     typeof session.updatedAt === "number" && Number.isFinite(session.updatedAt)
       ? session.updatedAt
@@ -11307,7 +11389,10 @@ function normalizeAssistantChatSession(
   };
 }
 
-function normalizeAssistantMessages(value: unknown) {
+function normalizeAssistantMessages(
+  value: unknown,
+  fallbackCreatedAt = Date.now(),
+) {
   if (!Array.isArray(value)) {
     return getDefaultAssistantMessages();
   }
@@ -11321,9 +11406,14 @@ function normalizeAssistantMessages(value: unknown) {
           (message as AssistantMessage).role === "user") &&
         typeof (message as AssistantMessage).content === "string",
     )
-    .map((message) => ({
+    .map((message, index) => ({
       role: message.role,
       content: message.content,
+      createdAt:
+        typeof message.createdAt === "number" &&
+        Number.isFinite(message.createdAt)
+          ? message.createdAt
+          : fallbackCreatedAt + index,
     }));
 
   return messages.length > 0 ? messages : getDefaultAssistantMessages();
@@ -11374,6 +11464,30 @@ function formatAssistantChatTimestamp(timestamp: number) {
     day: "numeric",
     year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
   });
+}
+
+function formatAssistantMessageTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+
+  const now = new Date();
+  const time = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  if (date.toDateString() === now.toDateString()) return time;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) {
+    return `Yesterday, ${time}`;
+  }
+
+  return `${date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  })}, ${time}`;
 }
 
 function defaultWhiteboardPosition(index: number): WhiteboardPosition {

@@ -237,6 +237,7 @@ export default defineSchema({
       v.object({
         role: v.union(v.literal("assistant"), v.literal("user")),
         content: v.string(),
+        createdAt: v.optional(v.number()),
       }),
     ),
     createdAt: v.number(),
